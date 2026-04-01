@@ -1,0 +1,14 @@
+[project]
+name = "general-usage-nemo-app"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "flask",
+    "openpyxl",
+    "pandas",
+    "reportlab",
+    "requests",
+]
+
+[project.scripts]
+nemo-tools-hub = "main_app:main"
