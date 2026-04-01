@@ -28,7 +28,7 @@ uv sync
 If the environment is already installed and you just want to run the app:
 
 ```bash
-uv run --no-sync nemo-tools-hub
+uv run --no-sync main_app.py
 ```
 
 ## Run The App
@@ -36,7 +36,7 @@ uv run --no-sync nemo-tools-hub
 From the project folder:
 
 ```bash
-uv run --no-sync nemo-tools-hub
+uv run --no-sync main_app.py
 ```
 
 Then open:
@@ -73,7 +73,7 @@ http://127.0.0.1:8000
 - If plain `uv run` attempts to sync packages, use:
 
 ```bash
-uv run --no-sync nemo-tools-hub
+uv run --no-sync main_app.py
 ```
 
 ## GitHub
