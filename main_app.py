@@ -9,6 +9,7 @@ import traceback
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".csv"}
 ALLOWED_INVOICE_SUFFIXES = {".csv"}
+GENERATED_INVOICES_DIR = BASE_DIR / "generated_invoices"
+INVOICE_RETENTION_DAYS = 14
 JOBS: dict[str, dict[str, object]] = {}
 JOBS_LOCK = threading.Lock()
 
@@ -375,6 +378,11 @@ PAGE_TEMPLATE = """
       border: 1px solid rgba(20, 33, 61, 0.08);
       font-size: 0.92rem;
     }
+    .job-log {
+      max-height: 320px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
     .footer-note {
       margin-top: 18px;
       color: var(--muted);
@@ -513,8 +521,86 @@ def append_job_log(job_id: str, message: str) -> None:
             return
         lines = list(job.get("log_lines", []))
         lines.append(str(message))
-        job["log_lines"] = lines[-20:]
+        job["log_lines"] = lines
         job["log"] = "\n".join(job["log_lines"])
+
+
+def ensure_generated_invoices_dir() -> Path:
+    GENERATED_INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+    return GENERATED_INVOICES_DIR
+
+
+def cleanup_old_generated_jobs(retention_days: int = INVOICE_RETENTION_DAYS) -> None:
+    root = ensure_generated_invoices_dir()
+    cutoff = datetime.now() - timedelta(days=retention_days)
+
+    for day_dir in root.iterdir():
+        if not day_dir.is_dir():
+            continue
+        for job_dir in day_dir.iterdir():
+            if not job_dir.is_dir():
+                continue
+
+            metadata_path = job_dir / "metadata.json"
+            created_at = None
+            if metadata_path.exists():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    raw_created_at = metadata.get("created_at")
+                    if raw_created_at:
+                        created_at = datetime.fromisoformat(str(raw_created_at))
+                except Exception:
+                    created_at = None
+
+            if created_at is None:
+                created_at = datetime.fromtimestamp(job_dir.stat().st_mtime)
+
+            if created_at < cutoff:
+                shutil.rmtree(job_dir, ignore_errors=True)
+
+        if not any(day_dir.iterdir()):
+            day_dir.rmdir()
+
+
+def persist_invoice_outputs(
+    *,
+    job_id: str,
+    created_at: datetime,
+    make_zip: bool,
+    zip_path: Optional[str],
+    generated_paths: list[str],
+    selected_options: dict[str, object],
+) -> tuple[Path, Optional[str], list[str], Path]:
+    base_output_dir = ensure_generated_invoices_dir()
+    job_output_dir = base_output_dir / created_at.strftime("%Y-%m-%d") / job_id
+    job_output_dir.mkdir(parents=True, exist_ok=True)
+
+    persisted_zip_path: Optional[str] = None
+    persisted_files: list[str] = []
+
+    if make_zip:
+        if not zip_path:
+            raise ValueError("ZIP output was requested, but no ZIP file was created.")
+        destination = job_output_dir / Path(zip_path).name
+        shutil.move(zip_path, destination)
+        persisted_zip_path = str(destination)
+    else:
+        for source_path in generated_paths:
+            destination = job_output_dir / Path(source_path).name
+            shutil.move(source_path, destination)
+            persisted_files.append(str(destination))
+
+    metadata = {
+        "job_id": job_id,
+        "created_at": created_at.isoformat(timespec="seconds"),
+        "selected_options": selected_options,
+        "output_file_paths": persisted_files,
+        "zip_file_path": persisted_zip_path,
+    }
+    metadata_path = job_output_dir / "metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    return job_output_dir, persisted_zip_path, persisted_files, metadata_path
 
 
 @app.get("/assets/columbia-logo")
@@ -697,7 +783,7 @@ def build_invoice_job_page(job_id: str) -> str:
         <strong id="job-title">Starting…</strong>
         <div id="job-summary" class="help">Preparing invoice job.</div>
         <div class="progress-shell"><div id="job-progress-bar" class="progress-bar"></div></div>
-        <pre id="job-log">Waiting for first update…</pre>
+        <pre id="job-log" class="job-log">Waiting for first update…</pre>
       </div>
       <div id="job-downloads" class="download-list"></div>
       <div class="actions">
@@ -857,7 +943,9 @@ def run_invoice_generator() -> str:
             error="PDF output was selected, but reportlab is not installed in this Python environment."
         )
 
+    cleanup_old_generated_jobs()
     job_id = str(uuid.uuid4())
+    created_at = datetime.now()
     workdir = tempfile.mkdtemp(prefix=f"invoice_{job_id}_")
     try:
         csv_path = save_upload(
@@ -881,6 +969,8 @@ def run_invoice_generator() -> str:
             "zip_path": None,
             "files": [],
             "workdir": workdir,
+            "job_output_dir": None,
+            "metadata_path": None,
             "file_downloads": [],
             "zip_download_url": None,
         }
@@ -938,16 +1028,6 @@ def run_invoice_generator() -> str:
                 status_callback=on_status,
             )
 
-            file_downloads = []
-            if not make_zip:
-                file_downloads = [
-                    {
-                        "label": Path(path).name,
-                        "url": f"/download/{job_id}/files/{index}",
-                    }
-                    for index, path in enumerate(generated_paths)
-                ]
-
             zip_path = None
             zip_download_url = None
             if make_zip:
@@ -964,7 +1044,6 @@ def run_invoice_generator() -> str:
                 )
                 if not zip_path:
                     raise ValueError("ZIP file creation failed.")
-                zip_download_url = f"/download/{job_id}"
 
             result_lines = []
             if generate_excel:
@@ -976,6 +1055,35 @@ def run_invoice_generator() -> str:
             else:
                 result_lines.append("Files are ready to download individually.")
 
+            append_job_log(job_id, "Moving finished output into persistent storage")
+            selected_options = {
+                "generate_excel": generate_excel,
+                "generate_pdf": generate_pdf,
+                "make_zip": make_zip,
+            }
+            job_output_dir, persisted_zip_path, persisted_files, metadata_path = (
+                persist_invoice_outputs(
+                    job_id=job_id,
+                    created_at=created_at,
+                    make_zip=make_zip,
+                    zip_path=zip_path,
+                    generated_paths=generated_paths,
+                    selected_options=selected_options,
+                )
+            )
+
+            file_downloads = []
+            if not make_zip:
+                file_downloads = [
+                    {
+                        "label": Path(path).name,
+                        "url": f"/download/{job_id}/files/{index}",
+                    }
+                    for index, path in enumerate(persisted_files)
+                ]
+            if persisted_zip_path:
+                zip_download_url = f"/download/{job_id}"
+
             update_job(
                 job_id,
                 status="completed",
@@ -984,13 +1092,16 @@ def run_invoice_generator() -> str:
                 current=max(int(job.get("total", 0)), int(job.get("current", 0)))
                 if (job := get_job(job_id))
                 else 0,
-                zip_path=zip_path,
-                files=generated_paths,
+                zip_path=persisted_zip_path,
+                files=persisted_files,
                 file_downloads=file_downloads,
                 zip_download_url=zip_download_url,
+                job_output_dir=str(job_output_dir),
+                metadata_path=str(metadata_path),
             )
             for line in result_lines:
                 append_job_log(job_id, line)
+            shutil.rmtree(workdir, ignore_errors=True)
         except Exception as exc:
             error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             append_job_log(job_id, error_text)
@@ -1000,6 +1111,7 @@ def run_invoice_generator() -> str:
                 title="Invoice generation failed",
                 summary="The job stopped before completion.",
             )
+            shutil.rmtree(workdir, ignore_errors=True)
 
     threading.Thread(target=worker, daemon=True).start()
     return redirect(url_for("invoice_job_page", job_id=job_id))
@@ -1098,6 +1210,7 @@ def download_generated_file(job_id: str, file_index: int):
 
 
 def main() -> None:
+    cleanup_old_generated_jobs()
     print(f"NEMO Tools Hub starting on http://127.0.0.1:{DEFAULT_PORT}")
     app.run(host="0.0.0.0", port=DEFAULT_PORT, debug=True)
 
