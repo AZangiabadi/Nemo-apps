@@ -56,7 +56,7 @@ import sys
 import traceback
 import zipfile
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 from openpyxl import Workbook
@@ -1419,13 +1419,19 @@ def generate_invoices(
     outdir: str,
     nemo_base: Optional[str] = None,
     api_token: Optional[str] = None,
+    generate_excel: bool = True,
     generate_pdf: bool = True,
     logo_path: Optional[str] = None,
-) -> Tuple[int, int, pd.DataFrame]:
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Tuple[int, int, pd.DataFrame, List[str]]:
     """
-    Returns: (xlsx_created, pdf_created, prepared_df)
+    Returns: (xlsx_created, pdf_created, prepared_df, generated_paths)
     """
     os.makedirs(outdir, exist_ok=True)
+
+    if not generate_excel and not generate_pdf:
+        raise RuntimeError("At least one output format must be selected.")
 
     if generate_pdf and not _pdf_available():
         raise RuntimeError(
@@ -1437,17 +1443,29 @@ def generate_invoices(
     use_api = bool(nemo_base and api_token)
 
     if use_api:
+        if status_callback:
+            status_callback("Fetching consumable metadata from NEMO API")
+        if progress_callback:
+            progress_callback(0, 0, "Fetching NEMO consumable data")
         if requests is None:
             raise RuntimeError("requests is not installed; cannot use an API token.")
         consumable_lab_map = fetch_all_consumables(
             nemo_base=nemo_base, api_token=api_token
         )
 
+    if status_callback:
+        status_callback("Reading and preparing usage CSV")
+    if progress_callback:
+        progress_callback(0, 0, "Reading usage CSV")
     df = load_and_prepare(csv_path, consumable_lab_map=consumable_lab_map)
     if df.empty:
         return 0, 0, df
 
     if use_api:
+        if status_callback:
+            status_callback("Fetching project contact data from NEMO API")
+        if progress_callback:
+            progress_callback(0, 0, "Fetching NEMO project contacts")
         project_map = fetch_all_projects(nemo_base=nemo_base, api_token=api_token)
 
         pi_infos = df["Project"].apply(
@@ -1463,10 +1481,19 @@ def generate_invoices(
 
     xlsx_created = 0
     pdf_created = 0
+    generated_paths: List[str] = []
 
     month_sequence: Dict[str, int] = {}
+    grouped = df.groupby(["PI_key", "Period"], sort=True)
+    total_invoices = grouped.ngroups
+    processed_invoices = 0
 
-    for (pi_key, period), grp in df.groupby(["PI_key", "Period"], sort=True):
+    if status_callback:
+        status_callback(f"Prepared {total_invoices} invoice group(s)")
+    if progress_callback:
+        progress_callback(0, total_invoices, "Prepared invoice groups")
+
+    for (pi_key, period), grp in grouped:
         pi_name = grp["PI_display_name"].iloc[0] or str(pi_key)
         nonempty_emails = grp["PI_email"].dropna().astype(str).str.strip()
         nonempty_emails = nonempty_emails[nonempty_emails != ""]
@@ -1478,16 +1505,23 @@ def generate_invoices(
         filename_safe = safe_filename(pi_name)
         period_label = month_label(period)
 
-        # XLSX
-        wb = create_invoice_workbook(
-            grp,
-            pi_display_name=pi_name,
-            period_ym=period,
-            invoice_number=invoice_number,
-        )
-        xlsx_path = os.path.join(outdir, f"{filename_safe} {period_label}.xlsx")
-        wb.save(xlsx_path)
-        xlsx_created += 1
+        if generate_excel:
+            if status_callback:
+                status_callback(f"Building Excel for {pi_name} {period_label}")
+            wb = create_invoice_workbook(
+                grp,
+                pi_display_name=pi_name,
+                period_ym=period,
+                invoice_number=invoice_number,
+            )
+            xlsx_path = os.path.join(outdir, f"{filename_safe} {period_label}.xlsx")
+            wb.save(xlsx_path)
+            generated_paths.append(xlsx_path)
+            xlsx_created += 1
+            try:
+                wb.close()
+            except Exception:
+                pass
 
         # PDF (optional)
         if generate_pdf:
@@ -1499,6 +1533,8 @@ def generate_invoices(
             else:
                 pdf_path = os.path.join(outdir, f"{filename_safe} {period_label}.pdf")
                 try:
+                    if status_callback:
+                        status_callback(f"Building PDF for {pi_name} {period_label}")
                     create_invoice_pdf(
                         grp,
                         pi_display_name=pi_name,
@@ -1508,13 +1544,26 @@ def generate_invoices(
                         pdf_path=pdf_path,
                         logo_path=logo_path,
                     )
+                    generated_paths.append(pdf_path)
                     pdf_created += 1
                 except Exception as e:
+                    if status_callback:
+                        status_callback(
+                            f"WARNING: PDF failed for {pi_name} {period_label}: {e}"
+                        )
                     print(
                         f"WARNING: Failed to create PDF for {pi_name} {period_label}: {e}",
                         file=sys.stderr,
                     )
                     traceback.print_exc(file=sys.stderr)
+
+        processed_invoices += 1
+        if progress_callback:
+            progress_callback(
+                processed_invoices,
+                total_invoices,
+                f"{pi_name} {period_label}",
+            )
 
     if generate_pdf and xlsx_created != pdf_created:
         print(
@@ -1523,7 +1572,7 @@ def generate_invoices(
             file=sys.stderr,
         )
 
-    return xlsx_created, pdf_created, df
+    return xlsx_created, pdf_created, df, generated_paths
 
 
 def create_invoice_zip(
@@ -1770,11 +1819,12 @@ def launch_gui_app() -> None:
         status_var.set("Generating invoices...")
         root.update_idletasks()
         try:
-            xlsx_created, pdf_created, df = generate_invoices(
+            xlsx_created, pdf_created, df, _generated_paths = generate_invoices(
                 csv_path=os.path.abspath(csv_path),
                 outdir=outdir,
                 nemo_base=nemo_base,
                 api_token=token,
+                generate_excel=True,
                 generate_pdf=generate_pdf,
                 logo_path=logo_path,
             )
@@ -1971,11 +2021,12 @@ def main() -> None:
         generate_pdf = False
 
     # Generate
-    xlsx_created, pdf_created, df = generate_invoices(
+    xlsx_created, pdf_created, df, _generated_paths = generate_invoices(
         csv_path=csv_path,
         outdir=outdir,
         nemo_base=nemo_base,
         api_token=(token or None),
+        generate_excel=True,
         generate_pdf=generate_pdf,
         logo_path=logo_path,
     )

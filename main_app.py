@@ -1,8 +1,10 @@
+import json
 import html
 import io
 import os
 import shutil
 import tempfile
+import threading
 import traceback
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
@@ -10,7 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, Response, redirect, render_template_string, request, send_file
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template_string,
+    request,
+    send_file,
+    url_for,
+)
 
 import nemo_invoice_generator_with_pdf as invoice_logic
 from nemo_invoice_generator_with_pdf import NEMO_BASE_URL, create_invoice_zip
@@ -21,7 +32,8 @@ BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".csv"}
 ALLOWED_INVOICE_SUFFIXES = {".csv"}
-JOBS: dict[str, dict[str, str]] = {}
+JOBS: dict[str, dict[str, object]] = {}
+JOBS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -287,6 +299,26 @@ PAGE_TEMPLATE = """
       transform: translateY(1px);
       margin-right: 8px;
     }
+    fieldset {
+      margin: 0;
+      padding: 16px 18px;
+      border: 1px solid rgba(18, 35, 63, 0.12);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.42);
+    }
+    legend {
+      padding: 0 8px;
+      font-weight: 700;
+    }
+    .choice-row {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+    .choice-row label {
+      margin-bottom: 0;
+      font-weight: 600;
+    }
     .actions {
       display: flex;
       gap: 12px;
@@ -311,6 +343,28 @@ PAGE_TEMPLATE = """
     .status.info {
       background: #edf3ff;
       border: 1px solid #b8caef;
+    }
+    .progress-shell {
+      margin-top: 14px;
+      width: 100%;
+      height: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(18, 35, 63, 0.10);
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #1a8f6c, #55c38f);
+      transition: width 220ms ease;
+    }
+    .download-list {
+      margin-top: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .download-list a {
+      text-decoration: none;
     }
     pre {
       margin: 10px 0 0;
@@ -431,6 +485,36 @@ def find_batch_import_template_path() -> Optional[str]:
     if template_path.exists():
         return str(template_path)
     return None
+
+
+def update_job(job_id: str, **changes: object) -> None:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        job.update(changes)
+
+
+def get_job(job_id: str) -> Optional[dict[str, object]]:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return None
+        copied = dict(job)
+        copied["files"] = list(job.get("files", []))
+        return copied
+
+
+def append_job_log(job_id: str, message: str) -> None:
+    print(f"[invoice-job {job_id}] {message}", flush=True)
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        lines = list(job.get("log_lines", []))
+        lines.append(str(message))
+        job["log_lines"] = lines[-20:]
+        job["log"] = "\n".join(job["log_lines"])
 
 
 @app.get("/assets/columbia-logo")
@@ -566,13 +650,13 @@ def build_invoice_page(
         )
         message += f'<div class="status success"><strong>Done</strong><pre>{html.escape(result)}</pre>{extra}</div>'
 
-    checked_attr = "checked"
-    disabled_attr = "" if pdf_available else "disabled"
+    pdf_checked_attr = "checked" if pdf_available else ""
+    pdf_disabled_attr = "" if pdf_available else "disabled"
     body = f"""
     <section class="panel">
       <div class="eyebrow">App 2</div>
       <h2>NEMO Invoice Generator</h2>
-      <p>Upload a NEMO usage CSV, enter your token, and generate a ZIP of invoices. Excel is always supported. PDF is optional.</p>
+      <p>Upload a NEMO usage CSV, choose the file types you want, and start a background job that reports invoice-by-invoice progress.</p>
       <form action="/apps/nemo-invoice-generator/run" method="post" enctype="multipart/form-data">
         <div>
           <label for="api_token">NEMO API Token</label>
@@ -582,10 +666,16 @@ def build_invoice_page(
           <label for="csv_file">Usage CSV</label>
           <input id="csv_file" type="file" name="csv_file" accept=".csv" required>
         </div>
-        <div>
-          <label><input type="checkbox" name="generate_pdf" {checked_attr} {disabled_attr}> Generate PDF</label>
+        <fieldset>
+          <legend>Output Options</legend>
+          <div class="choice-row">
+            <label><input type="checkbox" name="generate_excel" checked> Excel</label>
+            <label><input type="checkbox" name="generate_pdf" {pdf_checked_attr} {pdf_disabled_attr}> PDF</label>
+            <label><input type="checkbox" name="make_zip" checked> Make ZIP file</label>
+          </div>
           <div class="help">{html.escape(pdf_note)}</div>
-        </div>
+          <div class="help">If ZIP is unchecked, the finished page will show individual file download links instead.</div>
+        </fieldset>
         <div class="actions">
           <button type="submit">Generate Invoices</button>
           <a class="button secondary" href="/">Back Home</a>
@@ -595,6 +685,80 @@ def build_invoice_page(
     </section>
     """
     return render_page("NEMO Invoice Generator", body)
+
+
+def build_invoice_job_page(job_id: str) -> str:
+    body = f"""
+    <section class="panel">
+      <div class="eyebrow">App 2</div>
+      <h2>Invoice Generation In Progress</h2>
+      <p>The job is running in the background. This page updates automatically while files are being created.</p>
+      <div id="job-status" class="status info">
+        <strong id="job-title">Starting…</strong>
+        <div id="job-summary" class="help">Preparing invoice job.</div>
+        <div class="progress-shell"><div id="job-progress-bar" class="progress-bar"></div></div>
+        <pre id="job-log">Waiting for first update…</pre>
+      </div>
+      <div id="job-downloads" class="download-list"></div>
+      <div class="actions">
+        <a class="button secondary" href="/apps/nemo-invoice-generator/jobs/{html.escape(job_id)}/status" target="_blank" rel="noopener noreferrer">Open Status API</a>
+        <a class="button secondary" href="/apps/nemo-invoice-generator">Start Another Job</a>
+        <a class="button secondary" href="/">Back Home</a>
+      </div>
+    </section>
+    <script>
+      const jobId = {json.dumps(job_id)};
+      const statusEl = document.getElementById("job-status");
+      const titleEl = document.getElementById("job-title");
+      const summaryEl = document.getElementById("job-summary");
+      const logEl = document.getElementById("job-log");
+      const barEl = document.getElementById("job-progress-bar");
+      const downloadsEl = document.getElementById("job-downloads");
+
+      function renderDownloads(data) {{
+        const links = [];
+        if (data.zip_download_url) {{
+          links.push(`<a class="button" href="${{data.zip_download_url}}">Download ZIP</a>`);
+        }}
+        if (Array.isArray(data.file_downloads)) {{
+          for (const item of data.file_downloads) {{
+            links.push(`<a class="button secondary" href="${{item.url}}">${{item.label}}</a>`);
+          }}
+        }}
+        downloadsEl.innerHTML = links.join("");
+      }}
+
+      async function poll() {{
+        const response = await fetch(`/apps/nemo-invoice-generator/jobs/${{jobId}}/status`);
+        if (!response.ok) {{
+          titleEl.textContent = "Job not found";
+          summaryEl.textContent = "The job data is no longer available.";
+          statusEl.className = "status error";
+          return;
+        }}
+
+        const data = await response.json();
+        const total = data.total || 0;
+        const current = data.current || 0;
+        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+
+        titleEl.textContent = data.title || "Invoice Job";
+        summaryEl.textContent = data.summary || "";
+        logEl.textContent = data.log || "";
+        barEl.style.width = `${{percent}}%`;
+        statusEl.className = `status ${{data.status_class || "info"}}`;
+        renderDownloads(data);
+
+        if (data.finished) {{
+          return;
+        }}
+        window.setTimeout(poll, 1200);
+      }}
+
+      poll();
+    </script>
+    """
+    return render_page("Invoice Job Status", body)
 
 
 @app.get("/")
@@ -677,60 +841,209 @@ def run_user_batch_import() -> str:
 def run_invoice_generator() -> str:
     csv_file = request.files.get("csv_file")
     api_token = request.form.get("api_token", "").strip()
-    nemo_base = request.form.get("nemo_base", NEMO_BASE_URL).strip() or NEMO_BASE_URL
+    nemo_base = NEMO_BASE_URL
+    generate_excel = request.form.get("generate_excel") == "on"
     generate_pdf = request.form.get("generate_pdf") == "on"
+    make_zip = request.form.get("make_zip") == "on"
 
     if not api_token:
         return build_invoice_page(error="API token is required.")
     if not csv_file or not csv_file.filename:
         return build_invoice_page(error="Choose a usage CSV to upload.")
+    if not generate_excel and not generate_pdf:
+        return build_invoice_page(error="Select at least one output format.")
+    if generate_pdf and not invoice_logic._pdf_available():
+        return build_invoice_page(
+            error="PDF output was selected, but reportlab is not installed in this Python environment."
+        )
 
     job_id = str(uuid.uuid4())
     workdir = tempfile.mkdtemp(prefix=f"invoice_{job_id}_")
-    csv_path: Optional[Path] = None
-
     try:
         csv_path = save_upload(
             csv_file,
             allowed_suffixes=ALLOWED_INVOICE_SUFFIXES,
             folder=workdir,
         )
-        outdir = Path(workdir) / "invoices"
-        outdir.mkdir(parents=True, exist_ok=True)
-
-        want_pdf = generate_pdf and invoice_logic._pdf_available()
-        logo_path = find_logo_path() if want_pdf else None
-
-        xlsx_created, pdf_created, df = invoice_logic.generate_invoices(
-            csv_path=str(csv_path),
-            outdir=str(outdir),
-            nemo_base=nemo_base.rstrip("/"),
-            api_token=api_token,
-            generate_pdf=want_pdf,
-            logo_path=logo_path,
-        )
-        zip_path = create_invoice_zip(str(outdir), df, remove_members=True)
-        if not zip_path:
-            raise ValueError("No invoices were generated.")
-
-        JOBS[job_id] = {"zip_path": zip_path, "workdir": workdir}
-        result_lines = [
-            f"Created {xlsx_created} Excel invoice(s).",
-            (
-                f"Created {pdf_created} PDF invoice(s)."
-                if want_pdf
-                else "PDF generation was skipped."
-            ),
-            "Your ZIP file is ready to download.",
-        ]
-        return build_invoice_page(
-            result="\n".join(result_lines),
-            download_url=f"/download/{job_id}",
-        )
     except Exception as exc:
         shutil.rmtree(workdir, ignore_errors=True)
-        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-        return build_invoice_page(error=error_text)
+        return build_invoice_page(error=str(exc))
+
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "running",
+            "title": "Starting invoice generation",
+            "summary": "Preparing uploaded CSV.",
+            "current": 0,
+            "total": 0,
+            "log": "Preparing invoice job…",
+            "log_lines": ["Preparing invoice job…"],
+            "zip_path": None,
+            "files": [],
+            "workdir": workdir,
+            "file_downloads": [],
+            "zip_download_url": None,
+        }
+
+    def worker() -> None:
+        try:
+            outdir = Path(workdir) / "invoices"
+            outdir.mkdir(parents=True, exist_ok=True)
+            logo_path = find_logo_path() if generate_pdf else None
+
+            def on_status(message: str) -> None:
+                append_job_log(job_id, message)
+
+            def on_progress(done: int, total: int, label: str) -> None:
+                if total <= 0:
+                    append_job_log(job_id, label)
+                    update_job(
+                        job_id,
+                        title=label,
+                        summary="Preparing invoice data before file generation starts.",
+                        current=0,
+                        total=0,
+                    )
+                    return
+
+                if done == 0:
+                    append_job_log(job_id, label)
+                    update_job(
+                        job_id,
+                        title=f"Ready to create {total} invoice(s)",
+                        summary=f"Prepared invoice groups. About to start file generation for {total} invoice(s).",
+                        current=0,
+                        total=total,
+                    )
+                    return
+
+                append_job_log(job_id, f"Completed {done} of {total}: {label}")
+                update_job(
+                    job_id,
+                    title=f"{done} done out of {total}",
+                    summary=f"Creating invoice {done} of {total}",
+                    current=done,
+                    total=total,
+                )
+
+            xlsx_created, pdf_created, df, generated_paths = invoice_logic.generate_invoices(
+                csv_path=str(csv_path),
+                outdir=str(outdir),
+                nemo_base=nemo_base.rstrip("/"),
+                api_token=api_token,
+                generate_excel=generate_excel,
+                generate_pdf=generate_pdf,
+                logo_path=logo_path,
+                progress_callback=on_progress,
+                status_callback=on_status,
+            )
+
+            file_downloads = []
+            if not make_zip:
+                file_downloads = [
+                    {
+                        "label": Path(path).name,
+                        "url": f"/download/{job_id}/files/{index}",
+                    }
+                    for index, path in enumerate(generated_paths)
+                ]
+
+            zip_path = None
+            zip_download_url = None
+            if make_zip:
+                append_job_log(job_id, "Creating ZIP archive")
+                update_job(
+                    job_id,
+                    title="Creating ZIP file",
+                    summary="Combining generated files into one archive.",
+                )
+                zip_path = create_invoice_zip(
+                    str(outdir),
+                    df,
+                    remove_members=True,
+                )
+                if not zip_path:
+                    raise ValueError("ZIP file creation failed.")
+                zip_download_url = f"/download/{job_id}"
+
+            result_lines = []
+            if generate_excel:
+                result_lines.append(f"Created {xlsx_created} Excel invoice(s).")
+            if generate_pdf:
+                result_lines.append(f"Created {pdf_created} PDF invoice(s).")
+            if make_zip:
+                result_lines.append("ZIP file is ready to download.")
+            else:
+                result_lines.append("Files are ready to download individually.")
+
+            update_job(
+                job_id,
+                status="completed",
+                title="Invoice generation completed",
+                summary="All requested files have been created.",
+                current=max(int(job.get("total", 0)), int(job.get("current", 0)))
+                if (job := get_job(job_id))
+                else 0,
+                zip_path=zip_path,
+                files=generated_paths,
+                file_downloads=file_downloads,
+                zip_download_url=zip_download_url,
+            )
+            for line in result_lines:
+                append_job_log(job_id, line)
+        except Exception as exc:
+            error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            append_job_log(job_id, error_text)
+            update_job(
+                job_id,
+                status="error",
+                title="Invoice generation failed",
+                summary="The job stopped before completion.",
+            )
+
+    threading.Thread(target=worker, daemon=True).start()
+    return redirect(url_for("invoice_job_page", job_id=job_id))
+
+
+@app.get("/apps/nemo-invoice-generator/jobs/<job_id>")
+def invoice_job_page(job_id: str) -> str:
+    if not get_job(job_id):
+        return (
+            render_page(
+                "Not Found", '<section class="panel"><h2>Job not found.</h2></section>'
+            ),
+            404,
+        )
+    return build_invoice_job_page(job_id)
+
+
+@app.get("/apps/nemo-invoice-generator/jobs/<job_id>/status")
+def invoice_job_status(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found."}), 404
+
+    status = str(job.get("status", "running"))
+    status_class = "info"
+    if status == "completed":
+        status_class = "success"
+    elif status == "error":
+        status_class = "error"
+
+    return jsonify(
+        {
+            "title": job.get("title", "Invoice job"),
+            "summary": job.get("summary", ""),
+            "current": job.get("current", 0),
+            "total": job.get("total", 0),
+            "log": job.get("log", ""),
+            "status": status,
+            "status_class": status_class,
+            "finished": status in {"completed", "error"},
+            "zip_download_url": job.get("zip_download_url"),
+            "file_downloads": job.get("file_downloads", []),
+        }
+    )
 
 
 @app.get("/download/<job_id>")
@@ -743,8 +1056,44 @@ def download(job_id: str):
             ),
             404,
         )
+    zip_path = job.get("zip_path")
+    if not zip_path:
+        return (
+            render_page(
+                "Not Found", '<section class="panel"><h2>ZIP file not found.</h2></section>'
+            ),
+            404,
+        )
     return send_file(
-        job["zip_path"], as_attachment=True, download_name=Path(job["zip_path"]).name
+        zip_path, as_attachment=True, download_name=Path(str(zip_path)).name
+    )
+
+
+@app.get("/download/<job_id>/files/<int:file_index>")
+def download_generated_file(job_id: str, file_index: int):
+    job = get_job(job_id)
+    if not job:
+        return (
+            render_page(
+                "Not Found", '<section class="panel"><h2>Job not found.</h2></section>'
+            ),
+            404,
+        )
+
+    files = list(job.get("files", []))
+    if file_index < 0 or file_index >= len(files):
+        return (
+            render_page(
+                "Not Found", '<section class="panel"><h2>Generated file not found.</h2></section>'
+            ),
+            404,
+        )
+
+    file_path = str(files[file_index])
+    return send_file(
+        file_path,
+        as_attachment=True,
+        download_name=Path(file_path).name,
     )
 
 
