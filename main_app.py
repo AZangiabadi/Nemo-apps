@@ -1250,16 +1250,18 @@ def run_invoice_generator() -> str:
                     total=total,
                 )
 
-            xlsx_created, pdf_created, df, generated_paths = invoice_logic.generate_invoices(
-                csv_path=str(csv_path),
-                outdir=str(outdir),
-                nemo_base=nemo_base.rstrip("/"),
-                api_token=api_token,
-                generate_excel=generate_excel,
-                generate_pdf=generate_pdf,
-                logo_path=logo_path,
-                progress_callback=on_progress,
-                status_callback=on_status,
+            xlsx_created, pdf_created, df, generated_paths = (
+                invoice_logic.generate_invoices(
+                    csv_path=str(csv_path),
+                    outdir=str(outdir),
+                    nemo_base=nemo_base.rstrip("/"),
+                    api_token=api_token,
+                    generate_excel=generate_excel,
+                    generate_pdf=generate_pdf,
+                    logo_path=logo_path,
+                    progress_callback=on_progress,
+                    status_callback=on_status,
+                )
             )
 
             zip_path = None
@@ -1323,9 +1325,11 @@ def run_invoice_generator() -> str:
                 status="completed",
                 title="Invoice generation completed",
                 summary="All requested files have been created.",
-                current=max(int(job.get("total", 0)), int(job.get("current", 0)))
-                if (job := get_job(job_id))
-                else 0,
+                current=(
+                    max(int(job.get("total", 0)), int(job.get("current", 0)))
+                    if (job := get_job(job_id))
+                    else 0
+                ),
                 zip_path=persisted_zip_path,
                 files=persisted_files,
                 file_downloads=file_downloads,
@@ -1337,7 +1341,9 @@ def run_invoice_generator() -> str:
                 append_job_log(job_id, line)
             shutil.rmtree(workdir, ignore_errors=True)
         except Exception as exc:
-            error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            error_text = "".join(
+                traceback.format_exception_only(type(exc), exc)
+            ).strip()
             append_job_log(job_id, error_text)
             update_job(
                 job_id,
@@ -1407,7 +1413,8 @@ def download(job_id: str):
     if not zip_path:
         return (
             render_page(
-                "Not Found", '<section class="panel"><h2>ZIP file not found.</h2></section>'
+                "Not Found",
+                '<section class="panel"><h2>ZIP file not found.</h2></section>',
             ),
             404,
         )
@@ -1431,7 +1438,8 @@ def download_generated_file(job_id: str, file_index: int):
     if file_index < 0 or file_index >= len(files):
         return (
             render_page(
-                "Not Found", '<section class="panel"><h2>Generated file not found.</h2></section>'
+                "Not Found",
+                '<section class="panel"><h2>Generated file not found.</h2></section>',
             ),
             404,
         )
