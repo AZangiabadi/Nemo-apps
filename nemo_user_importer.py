@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import openpyxl
 import requests
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 BASE_URL = "https://nemo.cni.columbia.edu/api/"
-TIMEOUT = 90
+TIMEOUT = 240
 
 
 ACCOUNT_TYPE_MAP = {
@@ -53,6 +53,9 @@ EXPECTED_HEADERS = {
     "account type",
     "project number",
 }
+
+StatusCallback = Callable[[str], None]
+ProgressCallback = Callable[[int, int, str], None]
 
 
 @dataclass
@@ -396,16 +399,25 @@ def validate_rows(rows: list[SpreadsheetRow]) -> list[str]:
     return errors
 
 
+def emit_status(callback: StatusCallback | None, message: str) -> None:
+    if callback:
+        callback(message)
+
+
 def get_existing_maps(
     client: NemoClient,
+    status_callback: StatusCallback | None = None,
 ) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     set[str],
 ]:
+    emit_status(status_callback, "Fetching existing accounts from the NEMO API")
     accounts = client.fetch_all("accounts/")
+    emit_status(status_callback, "Fetching existing users from the NEMO API")
     users = client.fetch_all("users/")
+    emit_status(status_callback, "Fetching existing projects from the NEMO API")
     projects = client.fetch_all("projects/")
 
     accounts_by_name = {
@@ -604,9 +616,11 @@ def import_accounts(
     client: NemoClient,
     rows: list[SpreadsheetRow],
     accounts_by_name: dict[str, dict[str, Any]],
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, int]:
     account_ids_by_project_number: dict[str, int] = {}
     seen_projects: set[str] = set()
+    emit_status(status_callback, "Processing project accounts")
 
     for row in rows:
         project_number = row.project_number
@@ -617,6 +631,10 @@ def import_accounts(
 
         existing_account = accounts_by_name.get(project_key)
         if existing_account:
+            emit_status(
+                status_callback,
+                f"Checking account for project {project_number}: already exists",
+            )
             print(
                 f"Account already exists for '{project_number}': "
                 f"{existing_account.get('name')} (id={existing_account.get('id')})"
@@ -626,6 +644,10 @@ def import_accounts(
             continue
 
         payload = build_account_payload(project_number, row.normalized_account_type)
+        emit_status(
+            status_callback,
+            f"Creating account for project {project_number}",
+        )
         created_account = client.post("accounts/", payload)
         print(
             f"Created account '{created_account.get('name')}' "
@@ -637,6 +659,7 @@ def import_accounts(
     if client.dry_run:
         return account_ids_by_project_number
 
+    emit_status(status_callback, "Refreshing account list after account import")
     refreshed_accounts = refresh_accounts(client)
     for project_number in seen_projects:
         account = refreshed_accounts.get(project_number)
@@ -652,8 +675,10 @@ def import_pis(
     rows: list[SpreadsheetRow],
     users_by_email: dict[str, dict[str, Any]],
     account_ids_by_project_number: dict[str, int],
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     pi_rows = [row for row in rows if row.is_pi_row]
+    emit_status(status_callback, f"Processing {len(pi_rows)} PI row(s)")
 
     for row in pi_rows:
         account_id = account_id_for_project(
@@ -663,6 +688,10 @@ def import_pis(
         existing_user = users_by_email.get(row.email)
 
         if existing_user:
+            emit_status(
+                status_callback,
+                f"Updating PI access for {row.name} ({row.email})",
+            )
             print(
                 f"PI already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"
@@ -684,6 +713,10 @@ def import_pis(
             user_type,
             managed_account_ids=[account_id],
         )
+        emit_status(
+            status_callback,
+            f"Adding PI user {row.name} ({row.email})",
+        )
         created_user = client.post("users/", payload)
         print(
             f"Created PI '{created_user.get('email')}' "
@@ -700,13 +733,19 @@ def import_projects(
     projects_by_name: dict[str, dict[str, Any]],
     users_by_email: dict[str, dict[str, Any]],
     account_ids_by_project_number: dict[str, int],
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     pi_rows = [row for row in rows if row.is_pi_row]
+    emit_status(status_callback, "Creating or validating projects")
 
     for row in pi_rows:
         project_key = row.project_number.lower()
         if project_key in projects_by_name:
             existing_project = projects_by_name[project_key]
+            emit_status(
+                status_callback,
+                f"Checking project {row.project_number}: already exists",
+            )
             print(
                 f"Project already exists: {existing_project.get('name')} "
                 f"(id={existing_project.get('id')})"
@@ -721,6 +760,10 @@ def import_projects(
 
         account_id = account_id_for_project(
             account_ids_by_project_number, row.project_number
+        )
+        emit_status(
+            status_callback,
+            f"Creating project {row.project_number} for PI {row.name}",
         )
         payload = build_project_payload(row, account_id, pi_user["id"])
         created_project = client.post("projects/", payload)
@@ -739,8 +782,10 @@ def update_pi_project_links(
     users_by_email: dict[str, dict[str, Any]],
     projects_by_name: dict[str, dict[str, Any]],
     account_ids_by_project_number: dict[str, int],
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     pi_rows = [row for row in rows if row.is_pi_row]
+    emit_status(status_callback, "Linking PI users to their projects and accounts")
 
     for row in pi_rows:
         user = users_by_email.get(row.email)
@@ -757,6 +802,10 @@ def update_pi_project_links(
                     account_ids_by_project_number, row.project_number
                 )
             ],
+        )
+        emit_status(
+            status_callback,
+            f"Linking PI {row.name} ({row.email}) to project {row.project_number}",
         )
         updated_user = patch_if_changed(
             client,
@@ -782,8 +831,10 @@ def import_other_users(
     rows: list[SpreadsheetRow],
     users_by_email: dict[str, dict[str, Any]],
     projects_by_name: dict[str, dict[str, Any]],
+    status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     non_pi_rows = [row for row in rows if not row.is_pi_row]
+    emit_status(status_callback, f"Processing {len(non_pi_rows)} non-PI user row(s)")
 
     for row in non_pi_rows:
         project = projects_by_name.get(row.project_number.lower())
@@ -796,6 +847,10 @@ def import_other_users(
         existing_user = users_by_email.get(row.email)
 
         if existing_user:
+            emit_status(
+                status_callback,
+                f"Updating project access for user {row.name} ({row.email})",
+            )
             print(
                 f"User already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"
@@ -817,6 +872,10 @@ def import_other_users(
             row,
             user_type,
             project_ids=[project["id"]],
+        )
+        emit_status(
+            status_callback,
+            f"Adding user {row.name} ({row.email}) to project {row.project_number}",
         )
         created_user = client.post("users/", payload)
         print(
@@ -845,54 +904,94 @@ def summarize(rows: list[SpreadsheetRow]) -> str:
     )
 
 
-def run_import(file_path: str, token: str, dry_run: bool = False) -> None:
+def run_import(
+    file_path: str,
+    token: str,
+    dry_run: bool = False,
+    *,
+    status_callback: StatusCallback | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> None:
+    total_steps = 7
+    current_step = 0
+
+    def advance(label: str) -> None:
+        nonlocal current_step
+        current_step += 1
+        emit_status(status_callback, label)
+        if progress_callback:
+            progress_callback(current_step, total_steps, label)
+
+    emit_status(status_callback, "Reading uploaded spreadsheet")
     spreadsheet_path = Path(file_path)
     rows = load_spreadsheet(spreadsheet_path)
+    if progress_callback:
+        progress_callback(0, total_steps, "Reading uploaded spreadsheet")
     errors = validate_rows(rows)
     if errors:
         raise ValueError("\n".join(errors[:20]))
 
     print(f"Loaded file: {spreadsheet_path}")
     print(summarize(rows))
+    advance("Spreadsheet loaded and validated")
 
     client = NemoClient(token, dry_run=dry_run)
+    advance("Fetching current accounts, users, and projects from NEMO")
     accounts_by_name, users_by_email, projects_by_name, existing_usernames = (
-        get_existing_maps(client)
+        get_existing_maps(client, status_callback=status_callback)
     )
+    emit_status(status_callback, "Generating missing UNIs where needed")
     fill_missing_unis(rows, existing_usernames)
+    advance("Account import phase started")
 
-    account_ids_by_project_number = import_accounts(client, rows, accounts_by_name)
+    account_ids_by_project_number = import_accounts(
+        client,
+        rows,
+        accounts_by_name,
+        status_callback=status_callback,
+    )
+    advance("PI import phase started")
     users_by_email = import_pis(
         client,
         rows,
         users_by_email,
         account_ids_by_project_number,
+        status_callback=status_callback,
     )
+    advance("Project import phase started")
     projects_by_name = import_projects(
         client,
         rows,
         projects_by_name,
         users_by_email,
         account_ids_by_project_number,
+        status_callback=status_callback,
     )
+    advance("PI relationship update phase started")
     users_by_email = update_pi_project_links(
         client,
         rows,
         users_by_email,
         projects_by_name,
         account_ids_by_project_number,
+        status_callback=status_callback,
     )
+    advance("Other user import phase started")
     users_by_email = import_other_users(
         client,
         rows,
         users_by_email,
         projects_by_name,
+        status_callback=status_callback,
     )
+    _ = users_by_email
 
     if dry_run:
         print("Dry run complete. No changes were sent to NEMO.")
+        advance("Dry run complete")
     else:
         print("Import complete.")
+        advance("Import complete")
 
 
 def main() -> None:

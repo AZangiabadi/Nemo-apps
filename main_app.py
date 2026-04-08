@@ -514,7 +514,7 @@ def get_job(job_id: str) -> Optional[dict[str, object]]:
 
 
 def append_job_log(job_id: str, message: str) -> None:
-    print(f"[invoice-job {job_id}] {message}", flush=True)
+    print(f"[job {job_id}] {message}", flush=True)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
@@ -712,6 +712,101 @@ def build_import_page(
     return render_page("User Batch Import", body)
 
 
+def build_import_job_page(job_id: str) -> str:
+    body = f"""
+    <section class="panel">
+      <div class="eyebrow">App 1</div>
+      <h2>User Batch Import In Progress</h2>
+      <p>The batch import is running in the background. This page updates automatically while NEMO accounts, projects, and users are processed.</p>
+      <div id="job-status" class="status info">
+        <strong id="job-title">Starting...</strong>
+        <div id="job-summary" class="help">Preparing batch import job.</div>
+        <div id="job-timer" class="help">Elapsed time: 00:00</div>
+        <div class="progress-shell"><div id="job-progress-bar" class="progress-bar"></div></div>
+        <pre id="job-log" class="job-log">Waiting for first update...</pre>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/apps/user-batch-import/jobs/{html.escape(job_id)}/status" target="_blank" rel="noopener noreferrer">Open Status API</a>
+        <a class="button secondary" href="/apps/user-batch-import">Start Another Run</a>
+        <a class="button secondary" href="/">Back Home</a>
+      </div>
+    </section>
+    <script>
+      const jobId = {json.dumps(job_id)};
+      const statusEl = document.getElementById("job-status");
+      const titleEl = document.getElementById("job-title");
+      const summaryEl = document.getElementById("job-summary");
+      const timerEl = document.getElementById("job-timer");
+      const logEl = document.getElementById("job-log");
+      const barEl = document.getElementById("job-progress-bar");
+      let startedAtMs = null;
+      let timerHandle = null;
+
+      function formatElapsed(ms) {{
+        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+
+        if (hours > 0) {{
+          return `${{String(hours).padStart(2, "0")}}:${{String(minutes).padStart(2, "0")}}:${{String(seconds).padStart(2, "0")}}`;
+        }}
+        return `${{String(minutes).padStart(2, "0")}}:${{String(seconds).padStart(2, "0")}}`;
+      }}
+
+      function renderTimer() {{
+        if (startedAtMs === null) {{
+          timerEl.textContent = "Elapsed time: 00:00";
+          return;
+        }}
+        timerEl.textContent = `Elapsed time: ${{formatElapsed(Date.now() - startedAtMs)}}`;
+      }}
+
+      timerHandle = window.setInterval(renderTimer, 1000);
+
+      async function poll() {{
+        const response = await fetch(`/apps/user-batch-import/jobs/${{jobId}}/status`);
+        if (!response.ok) {{
+          titleEl.textContent = "Job not found";
+          summaryEl.textContent = "The job data is no longer available.";
+          statusEl.className = "status error";
+          return;
+        }}
+
+        const data = await response.json();
+        const total = data.total || 0;
+        const current = data.current || 0;
+        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+
+        titleEl.textContent = data.title || "Batch Import";
+        summaryEl.textContent = data.summary || "";
+        if (data.started_at) {{
+          const parsed = Date.parse(data.started_at);
+          if (!Number.isNaN(parsed)) {{
+            startedAtMs = parsed;
+          }}
+        }}
+        renderTimer();
+        logEl.textContent = data.log || "";
+        barEl.style.width = `${{percent}}%`;
+        statusEl.className = `status ${{data.status_class || "info"}}`;
+
+        if (data.finished) {{
+          if (timerHandle !== null) {{
+            window.clearInterval(timerHandle);
+            timerHandle = null;
+          }}
+          return;
+        }}
+        window.setTimeout(poll, 1200);
+      }}
+
+      poll();
+    </script>
+    """
+    return render_page("Batch Import Status", body)
+
+
 def build_invoice_page(
     *,
     error: str | None = None,
@@ -782,6 +877,7 @@ def build_invoice_job_page(job_id: str) -> str:
       <div id="job-status" class="status info">
         <strong id="job-title">Starting…</strong>
         <div id="job-summary" class="help">Preparing invoice job.</div>
+        <div id="job-timer" class="help">Elapsed time: 00:00</div>
         <div class="progress-shell"><div id="job-progress-bar" class="progress-bar"></div></div>
         <pre id="job-log" class="job-log">Waiting for first update…</pre>
       </div>
@@ -797,9 +893,34 @@ def build_invoice_job_page(job_id: str) -> str:
       const statusEl = document.getElementById("job-status");
       const titleEl = document.getElementById("job-title");
       const summaryEl = document.getElementById("job-summary");
+      const timerEl = document.getElementById("job-timer");
       const logEl = document.getElementById("job-log");
       const barEl = document.getElementById("job-progress-bar");
       const downloadsEl = document.getElementById("job-downloads");
+      let startedAtMs = null;
+      let timerHandle = null;
+
+      function formatElapsed(ms) {{
+        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+
+        if (hours > 0) {{
+          return `${{String(hours).padStart(2, "0")}}:${{String(minutes).padStart(2, "0")}}:${{String(seconds).padStart(2, "0")}}`;
+        }}
+        return `${{String(minutes).padStart(2, "0")}}:${{String(seconds).padStart(2, "0")}}`;
+      }}
+
+      function renderTimer() {{
+        if (startedAtMs === null) {{
+          timerEl.textContent = "Elapsed time: 00:00";
+          return;
+        }}
+        timerEl.textContent = `Elapsed time: ${{formatElapsed(Date.now() - startedAtMs)}}`;
+      }}
+
+      timerHandle = window.setInterval(renderTimer, 1000);
 
       function renderDownloads(data) {{
         const links = [];
@@ -830,12 +951,23 @@ def build_invoice_job_page(job_id: str) -> str:
 
         titleEl.textContent = data.title || "Invoice Job";
         summaryEl.textContent = data.summary || "";
+        if (data.started_at) {{
+          const parsed = Date.parse(data.started_at);
+          if (!Number.isNaN(parsed)) {{
+            startedAtMs = parsed;
+          }}
+        }}
+        renderTimer();
         logEl.textContent = data.log || "";
         barEl.style.width = `${{percent}}%`;
         statusEl.className = `status ${{data.status_class || "info"}}`;
         renderDownloads(data);
 
         if (data.finished) {{
+          if (timerHandle !== null) {{
+            window.clearInterval(timerHandle);
+            timerHandle = null;
+          }}
           return;
         }}
         window.setTimeout(poll, 1200);
@@ -895,9 +1027,8 @@ def run_user_batch_import() -> str:
             error="Choose a spreadsheet to upload.", status="error"
         )
 
-    temp_dir = tempfile.mkdtemp(prefix="nemo_import_")
-    saved_path: Optional[Path] = None
-    output = io.StringIO()
+    job_id = str(uuid.uuid4())
+    temp_dir = tempfile.mkdtemp(prefix=f"nemo_import_{job_id}_")
 
     try:
         saved_path = save_upload(
@@ -905,22 +1036,115 @@ def run_user_batch_import() -> str:
             allowed_suffixes=ALLOWED_IMPORT_SUFFIXES,
             folder=temp_dir,
         )
-        with redirect_stdout(output), redirect_stderr(output):
-            print(
-                "Run started via web app.\n"
-                f"Uploaded file: {spreadsheet.filename}\n"
-                f"Mode: {'Dry Run' if dry_run else 'Live Import'}\n"
-            )
-            run_import(str(saved_path), token, dry_run=dry_run)
-        return build_import_page(result=output.getvalue().strip(), status="success")
     except Exception as exc:
-        details = output.getvalue().strip()
-        combined = str(exc) if not details else f"{exc}\n\n{details}"
-        return build_import_page(error=combined, result=details, status="error")
-    finally:
-        if saved_path and saved_path.exists():
-            saved_path.unlink(missing_ok=True)
         shutil.rmtree(temp_dir, ignore_errors=True)
+        return build_import_page(error=str(exc), status="error")
+
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "running",
+            "title": "Batch import running",
+            "summary": "Preparing import job.",
+            "current": 0,
+            "total": 7,
+            "log": "Preparing batch import job...",
+            "log_lines": ["Preparing batch import job..."],
+            "mode": "Dry Run" if dry_run else "Live Import",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def worker() -> None:
+        output = io.StringIO()
+
+        def on_status(message: str) -> None:
+            update_job(job_id, summary=message)
+            append_job_log(job_id, message)
+
+        def on_progress(done: int, total: int, label: str) -> None:
+            update_job(job_id, current=done, total=total, summary=label)
+
+        try:
+            with redirect_stdout(output), redirect_stderr(output):
+                print(
+                    "Run started via web app.\n"
+                    f"Uploaded file: {spreadsheet.filename}\n"
+                    f"Mode: {'Dry Run' if dry_run else 'Live Import'}\n"
+                )
+                run_import(
+                    str(saved_path),
+                    token,
+                    dry_run=dry_run,
+                    status_callback=on_status,
+                    progress_callback=on_progress,
+                )
+
+            combined_log = output.getvalue().strip()
+            for line in combined_log.splitlines():
+                if line.strip():
+                    append_job_log(job_id, line)
+
+            update_job(
+                job_id,
+                status="completed",
+                title="Batch import complete",
+                summary=(
+                    "Dry run finished. No changes were sent to NEMO."
+                    if dry_run
+                    else "Import finished successfully."
+                ),
+                current=7,
+                total=7,
+            )
+        except Exception as exc:
+            details = output.getvalue().strip()
+            if details:
+                for line in details.splitlines():
+                    if line.strip():
+                        append_job_log(job_id, line)
+            error_text = str(exc)
+            append_job_log(job_id, error_text)
+            update_job(
+                job_id,
+                status="error",
+                title="Batch import failed",
+                summary=error_text,
+            )
+        finally:
+            if saved_path.exists():
+                saved_path.unlink(missing_ok=True)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return build_import_job_page(job_id)
+
+
+@app.get("/apps/user-batch-import/jobs/<job_id>/status")
+def user_batch_import_job_status(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    status = str(job.get("status", "running"))
+    status_class = "info"
+    if status == "completed":
+        status_class = "success"
+    elif status == "error":
+        status_class = "error"
+
+    return jsonify(
+        {
+            "title": job.get("title", "Batch import"),
+            "summary": job.get("summary", ""),
+            "log": job.get("log", ""),
+            "status": status,
+            "status_class": status_class,
+            "finished": status in {"completed", "error"},
+            "current": job.get("current", 0),
+            "total": job.get("total", 0),
+            "mode": job.get("mode", ""),
+            "started_at": job.get("started_at", ""),
+        }
+    )
 
 
 @app.post("/apps/nemo-invoice-generator/run")
@@ -973,6 +1197,7 @@ def run_invoice_generator() -> str:
             "metadata_path": None,
             "file_downloads": [],
             "zip_download_url": None,
+            "started_at": created_at.isoformat(timespec="seconds"),
         }
 
     def worker() -> None:
@@ -1154,6 +1379,7 @@ def invoice_job_status(job_id: str):
             "finished": status in {"completed", "error"},
             "zip_download_url": job.get("zip_download_url"),
             "file_downloads": job.get("file_downloads", []),
+            "started_at": job.get("started_at", ""),
         }
     )
 
