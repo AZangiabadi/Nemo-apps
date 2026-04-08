@@ -452,12 +452,21 @@ def save_upload(upload, *, allowed_suffixes: set[str], folder: str) -> Path:
     return destination
 
 
-def find_logo_path() -> Optional[str]:
+def find_website_logo_path() -> Optional[str]:
     for candidate in (
         "CNI_logo.png",
         "cni_logo.png",
         "CNI-logo.png",
         "cni-logo.png",
+    ):
+        path = BASE_DIR / candidate
+        if path.exists():
+            return str(path)
+    return None
+
+
+def find_pdf_logo_path() -> Optional[str]:
+    for candidate in (
         "Columbia_logo.png",
         "columbia_logo.png",
         "columbia_logo.jpg",
@@ -605,7 +614,7 @@ def persist_invoice_outputs(
 
 @app.get("/assets/columbia-logo")
 def columbia_logo():
-    logo_path = find_logo_path()
+    logo_path = find_website_logo_path()
     if not logo_path:
         return "", 404
     return send_file(logo_path)
@@ -1204,7 +1213,7 @@ def run_invoice_generator() -> str:
         try:
             outdir = Path(workdir) / "invoices"
             outdir.mkdir(parents=True, exist_ok=True)
-            logo_path = find_logo_path() if generate_pdf else None
+            logo_path = find_pdf_logo_path() if generate_pdf else None
 
             def on_status(message: str) -> None:
                 append_job_log(job_id, message)
