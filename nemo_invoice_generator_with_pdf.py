@@ -463,6 +463,14 @@ def internal_facility_fee_for_group(df_group: pd.DataFrame) -> float:
     )
 
 
+def invoice_group_has_cdg(df_group: pd.DataFrame) -> bool:
+    """Return True when the invoice includes any CDG account type charges."""
+    app_ids = df_group.get("Application identifier", pd.Series(dtype=str))
+    if app_ids.empty:
+        return False
+    return app_ids.fillna("").astype(str).str.upper().eq("CDG").any()
+
+
 def select_access_fee_project(df_group: pd.DataFrame) -> Optional[pd.Series]:
     """
     Choose which project should carry the access fee.
@@ -561,6 +569,8 @@ def create_invoice_workbook(
 
     ml = month_label(period_ym)
     internal_fee = internal_facility_fee_for_group(df_group)
+    show_subsidy = invoice_group_has_cdg(df_group)
+    detail_end_col = 9 if show_subsidy else 8
 
     # Header
     ws.merge_cells("A1:K1")
@@ -635,33 +645,41 @@ def create_invoice_workbook(
         title.font = Font(bold=True, size=12)
         title.fill = _SECTION_FILL
         ws.merge_cells(
-            start_row=current_row, start_column=1, end_row=current_row, end_column=9
+            start_row=current_row,
+            start_column=1,
+            end_row=current_row,
+            end_column=detail_end_col,
         )
         current_row += 1
 
         df_lab = df_lab.sort_values(["Start_dt", "User", "Item_norm", "Project"])
 
-        out = df_lab[
-            [
-                "Start_dt",
-                "User",
-                "Item_norm",
-                "Type",
-                "Project",
-                "Quantity",
-                "Rate",
-                "Subsidy",
-                "Cost",
-            ]
-        ].copy()
+        detail_columns = [
+            "Start_dt",
+            "User",
+            "Item_norm",
+            "Type",
+            "Project",
+            "Quantity",
+            "Rate",
+        ]
+        if show_subsidy:
+            detail_columns.append("Subsidy")
+        detail_columns.append("Cost")
+
+        out = df_lab[detail_columns].copy()
         out = out.rename(columns={"Start_dt": "Date", "Item_norm": "Description"})
 
+        currency_cols = ["Cost"]
+        if show_subsidy:
+            currency_cols.insert(0, "Subsidy")
         current_row = write_table(
-            ws, current_row, 1, out, currency_cols=["Subsidy", "Cost"]
+            ws, current_row, 1, out, currency_cols=currency_cols
         )
 
-        ws.cell(current_row, 8, value="Subtotal").font = _BOLD
-        sub = ws.cell(current_row, 9, value=float(df_lab["Cost"].sum()))
+        subtotal_label_col = detail_end_col - 1
+        ws.cell(current_row, subtotal_label_col, value="Subtotal").font = _BOLD
+        sub = ws.cell(current_row, detail_end_col, value=float(df_lab["Cost"].sum()))
         sub.font = _BOLD
         sub.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
         current_row += 2
@@ -933,6 +951,7 @@ def create_invoice_pdf(
     # Header (logo + title/info)
     ml = month_label(period_ym)
     internal_fee = internal_facility_fee_for_group(df_group)
+    show_subsidy = invoice_group_has_cdg(df_group)
 
     logo = _make_logo_flowable(
         logo_path or "",
@@ -1098,20 +1117,15 @@ def create_invoice_pdf(
     story.append(Spacer(1, 10))
 
     # Details by lab
-    detail_col_names = [
-        "Date",
-        "User",
-        "Description",
-        "Type",
-        "Project",
-        "Qty",
-        "Rate",
-        "Subsidy",
-        "Cost",
-    ]
-    # Column widths as fractions of the available page width (doc.width).
-    # This prevents tables from being clipped off the right edge.
-    detail_fracs = [0.10, 0.10, 0.20, 0.08, 0.19, 0.06, 0.10, 0.08, 0.09]
+    detail_col_names = ["Date", "User", "Description", "Type", "Project", "Qty", "Rate"]
+    if show_subsidy:
+        detail_col_names.append("Subsidy")
+        # Column widths as fractions of the available page width (doc.width).
+        # This prevents tables from being clipped off the right edge.
+        detail_fracs = [0.10, 0.10, 0.20, 0.08, 0.19, 0.06, 0.10, 0.08, 0.09]
+    else:
+        detail_fracs = [0.10, 0.10, 0.22, 0.08, 0.21, 0.06, 0.11]
+    detail_col_names.append("Cost")
     col_widths = [doc.width * f for f in detail_fracs]
 
     for lab in DESIRED_LAB_ORDER:
@@ -1148,10 +1162,11 @@ def create_invoice_pdf(
                     P(proj, styleSmall),
                     P("" if pd.isna(qty) else f"{qty:g}", styleSmall),
                     P(rate, styleSmall),
-                    P(_fmt_money(subsidy), styleSmall),
-                    P(_fmt_money(cost), styleSmall),
                 ]
             )
+            if show_subsidy:
+                rows[-1].append(P(_fmt_money(subsidy), styleSmall))
+            rows[-1].append(P(_fmt_money(cost), styleSmall))
 
         tbl = Table(
             rows,
@@ -1172,14 +1187,23 @@ def create_invoice_pdf(
         story.append(tbl)
 
         subtotal = float(df_lab["Cost"].sum())
+        subtotal_row = [""] * len(detail_col_names)
+        subtotal_row[-2] = "Subtotal"
+        subtotal_row[-1] = _fmt_money(subtotal)
         sub_tbl = Table(
-            [["", "", "", "", "", "", "", "Subtotal", _fmt_money(subtotal)]],
+            [subtotal_row],
             colWidths=col_widths,
             style=TableStyle(
                 [
-                    ("FONTNAME", (7, 0), (-1, 0), "Helvetica-Bold"),
-                    ("ALIGN", (8, 0), (8, 0), "RIGHT"),
-                    ("LINEABOVE", (7, 0), (8, 0), 0.5, colors.black),
+                    ("FONTNAME", (len(detail_col_names) - 2, 0), (-1, 0), "Helvetica-Bold"),
+                    ("ALIGN", (len(detail_col_names) - 1, 0), (len(detail_col_names) - 1, 0), "RIGHT"),
+                    (
+                        "LINEABOVE",
+                        (len(detail_col_names) - 2, 0),
+                        (len(detail_col_names) - 1, 0),
+                        0.5,
+                        colors.black,
+                    ),
                 ]
             ),
             hAlign="LEFT",
