@@ -5,6 +5,7 @@ Internal Columbia Nano Initiative web app for launching NEMO-related tools from 
 Current apps:
 - `User Batch Import From Excel`
 - `NEMO Invoice Generator`
+- `Jumbotron`
 
 ## Project Structure
 
@@ -60,6 +61,21 @@ http://127.0.0.1:8000
 - enter a NEMO API token
 - generate invoice ZIP files
 - optional PDF generation when `reportlab` is installed
+
+### 3. Jumbotron
+
+- reads its NEMO API token from the `NEMO_JUMBOTRON_API_TOKEN` environment variable
+- view tools currently in use from live usage events
+- view upcoming reservations for today and tomorrow
+- view today's cancellations, including auto-cancelled missed reservations
+- auto-scrolls the page and polls for updates
+
+Example launch:
+
+```bash
+export NEMO_JUMBOTRON_API_TOKEN="your-token-here"
+uv run --no-sync main_app.py
+```
 
 ## Notes
 

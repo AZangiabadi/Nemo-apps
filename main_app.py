@@ -9,7 +9,7 @@ import traceback
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -26,11 +26,17 @@ from flask import (
 
 import nemo_invoice_generator_with_pdf as invoice_logic
 from nemo_invoice_generator_with_pdf import NEMO_BASE_URL, create_invoice_zip
-from nemo_user_importer import run_import
+from nemo_user_importer import BASE_URL as NEMO_API_BASE_URL, NemoClient, run_import
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
+JUMBOTRON_API_TOKEN_ENV = "NEMO_JUMBOTRON_API_TOKEN"
+JUMBOTRON_REFRESH_SECONDS = int(os.environ.get("NEMO_JUMBOTRON_REFRESH_SECONDS", "15"))
+JUMBOTRON_SCROLL_STEP_PX = int(os.environ.get("NEMO_JUMBOTRON_SCROLL_STEP_PX", "1"))
+JUMBOTRON_SCROLL_INTERVAL_MS = int(
+    os.environ.get("NEMO_JUMBOTRON_SCROLL_INTERVAL_MS", "50")
+)
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".csv"}
 ALLOWED_INVOICE_SUFFIXES = {".csv"}
 GENERATED_INVOICES_DIR = BASE_DIR / "generated_invoices"
@@ -62,6 +68,13 @@ APP_DEFINITIONS: list[AppDefinition] = [
         summary="Upload a usage CSV and generate invoice ZIP files with Excel and optional PDF output.",
         accent="#9a3412",
         details="Uses your existing invoice logic and keeps the ZIP ready for download.",
+    ),
+    AppDefinition(
+        slug="jumbotron",
+        title="Jumbotron",
+        summary="Show live tool usage, upcoming reservations for today and tomorrow, and today's cancellations.",
+        accent="#1d4ed8",
+        details="Built on top of the NEMO jumbotron idea with reservation-focused tables.",
     ),
 ]
 
@@ -388,6 +401,65 @@ PAGE_TEMPLATE = """
       color: var(--muted);
       line-height: 1.55;
     }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 22px;
+      border: 1px solid rgba(18, 35, 63, 0.10);
+      background: rgba(255, 255, 255, 0.55);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 14px 16px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(18, 35, 63, 0.08);
+    }
+    th {
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 0.84rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(237, 243, 255, 0.88);
+    }
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-top: 22px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      padding: 18px 20px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.58);
+      border: 1px solid rgba(18, 35, 63, 0.10);
+      box-shadow: var(--soft-shadow);
+    }
+    .stat-label {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .stat-value {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 2.8rem);
+      line-height: 1;
+    }
+    .section-stack {
+      display: grid;
+      gap: 24px;
+      margin-top: 30px;
+    }
     @media (max-width: 700px) {
       .hero, .panel, .card { padding: 22px; }
       .hero-logo {
@@ -420,6 +492,7 @@ PAGE_TEMPLATE = """
           <a href="/">Home</a>
           <a href="/apps/user-batch-import">User Batch Import</a>
           <a href="/apps/nemo-invoice-generator">Invoice Generator</a>
+          <a href="/apps/jumbotron">Jumbotron</a>
         </div>
       </div>
     </section>
@@ -988,6 +1061,522 @@ def build_invoice_job_page(job_id: str) -> str:
     return render_page("Invoice Job Status", body)
 
 
+def parse_api_datetime(value: object) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def format_dashboard_datetime(value: object) -> str:
+    parsed = parse_api_datetime(value)
+    if not parsed:
+        return "—"
+    local_value = parsed.astimezone()
+    return local_value.strftime("%a, %b %d, %Y %I:%M %p")
+
+
+def get_jumbotron_token() -> str:
+    token = os.environ.get(JUMBOTRON_API_TOKEN_ENV, "").strip()
+    if token:
+        return token
+    raise RuntimeError(
+        f"Set the {JUMBOTRON_API_TOKEN_ENV} environment variable before opening the jumbotron page."
+    )
+
+
+def fetch_lookup_map(
+    client: NemoClient, endpoint: str, ids: set[int]
+) -> dict[int, dict[str, object]]:
+    if not ids:
+        return {}
+
+    records: dict[int, dict[str, object]] = {}
+    sorted_ids = sorted(ids)
+    for start_index in range(0, len(sorted_ids), 100):
+        chunk = sorted_ids[start_index : start_index + 100]
+        chunk_text = ",".join(str(item_id) for item_id in chunk)
+        for record in client.fetch_all(f"{endpoint}?id__in={chunk_text}"):
+            record_id = record.get("id")
+            if isinstance(record_id, int):
+                records[record_id] = record
+    return records
+
+
+def username_for_id(users_by_id: dict[int, dict[str, object]], user_id: object) -> str:
+    if not isinstance(user_id, int):
+        return "—"
+    user = users_by_id.get(user_id, {})
+    username = str(user.get("username", "") or "").strip()
+    if username:
+        return username
+    return f"User {user_id}"
+
+
+def tool_name_for_id(tools_by_id: dict[int, dict[str, object]], tool_id: object) -> str:
+    if not isinstance(tool_id, int):
+        return "—"
+    tool = tools_by_id.get(tool_id, {})
+    name = str(tool.get("name", "") or "").strip()
+    if name:
+        return name
+    return f"Tool {tool_id}"
+
+
+def build_dashboard_table(
+    title: str, subtitle: str, columns: list[str], rows: list[list[str]]
+) -> str:
+    if not rows:
+        table_markup = '<div class="status info">No matching records.</div>'
+    else:
+        head = "".join(f"<th>{html.escape(column)}</th>" for column in columns)
+        body_rows = []
+        for row in rows:
+            cells = "".join(f"<td>{html.escape(cell)}</td>" for cell in row)
+            body_rows.append(f"<tr>{cells}</tr>")
+        table_markup = (
+            '<div class="table-wrap"><table><thead><tr>'
+            + head
+            + "</tr></thead><tbody>"
+            + "".join(body_rows)
+            + "</tbody></table></div>"
+        )
+
+    return f"""
+    <section class="panel">
+      <h2>{html.escape(title)}</h2>
+      <p>{html.escape(subtitle)}</p>
+      {table_markup}
+    </section>
+    """
+
+
+def build_jumbotron_report(token: str) -> dict[str, object]:
+    client = NemoClient(token, base_url=NEMO_API_BASE_URL)
+    now = datetime.now().astimezone()
+    today_start = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
+    tomorrow_start = today_start + timedelta(days=1)
+    day_after_tomorrow_start = today_start + timedelta(days=2)
+
+    usage_events = client.fetch_all("usage_events/?end__isnull=true")
+    reservations = client.fetch_all(
+        "reservations/"
+        f"?start__gte={today_start.isoformat()}"
+        f"&start__lt={day_after_tomorrow_start.isoformat()}"
+    )
+
+    user_ids: set[int] = set()
+    tool_ids: set[int] = set()
+
+    for event in usage_events:
+        for key in ("user", "operator"):
+            value = event.get(key)
+            if isinstance(value, int):
+                user_ids.add(value)
+        tool_value = event.get("tool")
+        if isinstance(tool_value, int):
+            tool_ids.add(tool_value)
+
+    for reservation in reservations:
+        for key in ("user", "creator", "cancelled_by"):
+            value = reservation.get(key)
+            if isinstance(value, int):
+                user_ids.add(value)
+        tool_value = reservation.get("tool")
+        if isinstance(tool_value, int):
+            tool_ids.add(tool_value)
+
+    users_by_id = fetch_lookup_map(client, "users/", user_ids)
+    tools_by_id = fetch_lookup_map(client, "tools/", tool_ids)
+
+    current_usage = sorted(
+        usage_events,
+        key=lambda event: (
+            parse_api_datetime(event.get("start"))
+            or datetime.min.replace(tzinfo=now.tzinfo)
+        ),
+    )
+
+    upcoming_reservations = []
+    todays_cancellations = []
+    for reservation in reservations:
+        start_time = parse_api_datetime(reservation.get("start"))
+        if not start_time:
+            continue
+
+        is_cancelled = bool(reservation.get("cancelled"))
+        if not is_cancelled and start_time >= now:
+            if start_time < tomorrow_start:
+                day_label = "Today"
+            elif start_time < day_after_tomorrow_start:
+                day_label = "Tomorrow"
+            else:
+                continue
+            upcoming_reservations.append((day_label, reservation))
+
+        if is_cancelled and start_time < tomorrow_start:
+            todays_cancellations.append(reservation)
+
+    upcoming_reservations.sort(
+        key=lambda item: parse_api_datetime(item[1].get("start")) or now
+    )
+    todays_cancellations.sort(
+        key=lambda reservation: parse_api_datetime(reservation.get("cancellation_time"))
+        or parse_api_datetime(reservation.get("start"))
+        or now,
+        reverse=True,
+    )
+
+    current_usage_rows = []
+    for event in current_usage:
+        user_id = (
+            event.get("user")
+            if isinstance(event.get("user"), int)
+            else event.get("operator")
+        )
+        current_usage_rows.append(
+            [
+                username_for_id(users_by_id, user_id),
+                tool_name_for_id(tools_by_id, event.get("tool")),
+                format_dashboard_datetime(event.get("start")),
+            ]
+        )
+
+    upcoming_rows = []
+    for day_label, reservation in upcoming_reservations:
+        upcoming_rows.append(
+            [
+                day_label,
+                username_for_id(users_by_id, reservation.get("user")),
+                tool_name_for_id(tools_by_id, reservation.get("tool")),
+                format_dashboard_datetime(reservation.get("start")),
+                format_dashboard_datetime(reservation.get("end")),
+            ]
+        )
+
+    cancellation_rows = []
+    for reservation in todays_cancellations:
+        cancellation_rows.append(
+            [
+                username_for_id(users_by_id, reservation.get("user")),
+                tool_name_for_id(tools_by_id, reservation.get("tool")),
+                "Missed reservation" if reservation.get("missed") else "User Cancelled",
+                format_dashboard_datetime(reservation.get("start")),
+                format_dashboard_datetime(reservation.get("cancellation_time")),
+            ]
+        )
+
+    return {
+        "generated_at": now.strftime("%a, %b %d, %Y %I:%M %p"),
+        "current_usage_rows": current_usage_rows,
+        "upcoming_rows": upcoming_rows,
+        "cancellation_rows": cancellation_rows,
+    }
+
+
+def build_jumbotron_content(report: dict[str, object]) -> str:
+    generated_at = str(report.get("generated_at", "") or "")
+    current_usage_rows = report.get("current_usage_rows", [])
+    upcoming_rows = report.get("upcoming_rows", [])
+    cancellation_rows = report.get("cancellation_rows", [])
+
+    stats = f"""
+    <section class="stat-grid">
+      <article class="stat-card">
+        <p class="stat-label">In Use Now</p>
+        <p class="stat-value">{len(current_usage_rows)}</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Upcoming</p>
+        <p class="stat-value">{len(upcoming_rows)}</p>
+      </article>
+      <article class="stat-card">
+        <p class="stat-label">Today's Cancellations</p>
+        <p class="stat-value">{len(cancellation_rows)}</p>
+      </article>
+    </section>
+    """
+
+    return f"""
+    <section class="panel">
+      <div class="eyebrow">Live Snapshot</div>
+      <h2>Live NEMO Activity</h2>
+      <p>Data pulled from the NEMO API at {html.escape(generated_at)}.</p>
+      {stats}
+    </section>
+    <div class="section-stack">
+      {build_dashboard_table(
+          "Currently In Use",
+          "",
+          ["Username", "Tool", "Started"],
+          current_usage_rows,
+      )}
+      {build_dashboard_table(
+          "Upcoming Reservations",
+          "Upcoming reservations scheduled for the rest of today and all of tomorrow.",
+          ["Day", "Username", "Tool", "Start", "End"],
+          upcoming_rows,
+      )}
+      {build_dashboard_table(
+          "Today's Cancellations",
+          "Cancelled reservations scheduled for today, including auto-cancelled missed reservations.",
+          ["Username", "Tool", "Type", "Reservation Start", "Cancelled At"],
+          cancellation_rows,
+      )}
+    </div>
+    """
+
+
+def build_jumbotron_page(
+    *,
+    error: str | None = None,
+    report: Optional[dict[str, object]] = None,
+) -> str:
+    content = ""
+    if report:
+        content = build_jumbotron_content(report)
+    elif error:
+        content = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    else:
+        content = '<div class="status info">Loading jumbotron…</div>'
+
+    template = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jumbotron</title>
+  <style>
+    :root {
+      --ink: #12233f;
+      --paper: #f4f0e8;
+      --panel: rgba(244, 248, 252, 0.82);
+      --line: rgba(20, 35, 63, 0.12);
+      --muted: #5e6b82;
+      --hero-start: #0c3b60;
+      --hero-mid: #165b78;
+      --hero-end: #08304b;
+      --shadow: 0 24px 60px rgba(12, 29, 57, 0.16);
+      --soft-shadow: 0 16px 34px rgba(12, 29, 57, 0.10);
+      --radius: 28px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: auto; }
+    body {
+      margin: 0;
+      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(0, 94, 184, 0.08), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(214, 179, 106, 0.10), transparent 25%),
+        var(--paper);
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image: url("/assets/nemo-logo");
+      background-repeat: no-repeat;
+      background-position: center center;
+      background-size: min(72vw, 980px);
+      opacity: 0.04;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .shell {
+      position: relative;
+      z-index: 1;
+      max-width: 1380px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--soft-shadow);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      padding: 28px;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 3vw, 2.8rem);
+      line-height: 0.96;
+      letter-spacing: -0.03em;
+    }
+    p {
+      line-height: 1.55;
+    }
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 16px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #1d4ed8;
+      background: rgba(29, 78, 216, 0.12);
+    }
+    .status {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border-radius: 22px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .status.error {
+      background: #fde8e2;
+      border: 1px solid #efb6a8;
+    }
+    .status.info {
+      background: #edf3ff;
+      border: 1px solid #b8caef;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 22px;
+      border: 1px solid rgba(18, 35, 63, 0.10);
+      background: rgba(255, 255, 255, 0.68);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 16px 18px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(18, 35, 63, 0.08);
+      font-size: 1.04rem;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 0.88rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(237, 243, 255, 0.96);
+    }
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-top: 22px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      padding: 18px 20px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(18, 35, 63, 0.10);
+      box-shadow: var(--soft-shadow);
+    }
+    .stat-label {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 0.82rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .stat-value {
+      margin: 0;
+      font-size: clamp(2.2rem, 5vw, 3.2rem);
+      line-height: 1;
+    }
+    .section-stack {
+      display: grid;
+      gap: 24px;
+      margin-top: 24px;
+    }
+    @media (max-width: 700px) {
+      .shell, .panel { padding: 18px; }
+      th, td { padding: 12px 14px; font-size: 0.96rem; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div id="jumbotron-content">{{ content|safe }}</div>
+  </main>
+  <script>
+    const contentEl = document.getElementById("jumbotron-content");
+    const refreshUrl = "/apps/jumbotron/data";
+    const refreshMs = {{ refresh_ms }};
+    const scrollStepPx = {{ scroll_step_px }};
+    const scrollIntervalMs = {{ scroll_interval_ms }};
+    let lastSignature = {{ initial_signature|tojson }};
+    let scrollHandle = null;
+    let pauseUntil = 0;
+
+    function startAutoScroll() {
+      if (scrollHandle !== null) window.clearInterval(scrollHandle);
+      scrollHandle = window.setInterval(() => {
+        if (Date.now() < pauseUntil) return;
+        const maxScrollTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        if (maxScrollTop <= 0) return;
+        const nearBottom = window.scrollY >= maxScrollTop - scrollStepPx - 2;
+        if (nearBottom) {
+          pauseUntil = Date.now() + 2500;
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+        window.scrollBy(0, scrollStepPx);
+      }, scrollIntervalMs);
+    }
+
+    async function refreshIfChanged() {
+      try {
+        const response = await fetch(refreshUrl, { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.signature !== lastSignature) {
+          lastSignature = data.signature;
+          contentEl.innerHTML = data.html;
+          pauseUntil = Date.now() + 1200;
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } catch (error) {
+        console.error("Jumbotron refresh failed", error);
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        refreshIfChanged();
+      }
+    });
+
+    startAutoScroll();
+    window.setInterval(refreshIfChanged, refreshMs);
+  </script>
+</body>
+</html>
+    """
+    signature = json.dumps(report or {"error": error}, sort_keys=True)
+    return render_template_string(
+        template,
+        content=content,
+        initial_signature=signature,
+        refresh_ms=JUMBOTRON_REFRESH_SECONDS * 1000,
+        scroll_step_px=JUMBOTRON_SCROLL_STEP_PX,
+        scroll_interval_ms=JUMBOTRON_SCROLL_INTERVAL_MS,
+    )
+
+
 @app.get("/")
 def home() -> str:
     return build_homepage()
@@ -1014,6 +1603,12 @@ def app_page(slug: str) -> str:
         return build_import_page()
     if slug == "nemo-invoice-generator":
         return build_invoice_page()
+    if slug == "jumbotron":
+        try:
+            report = build_jumbotron_report(get_jumbotron_token())
+        except Exception as exc:
+            return build_jumbotron_page(error=str(exc))
+        return build_jumbotron_page(report=report)
     return (
         render_page(
             "Coming Soon",
@@ -1355,6 +1950,30 @@ def run_invoice_generator() -> str:
 
     threading.Thread(target=worker, daemon=True).start()
     return redirect(url_for("invoice_job_page", job_id=job_id))
+
+
+@app.get("/apps/jumbotron/data")
+def jumbotron_data():
+    try:
+        report = build_jumbotron_report(get_jumbotron_token())
+        payload = {
+            "html": build_jumbotron_content(report),
+            "signature": json.dumps(report, sort_keys=True),
+            "generated_at": report.get("generated_at", ""),
+        }
+        return jsonify(payload)
+    except Exception as exc:
+        error_html = f'<div class="status error"><strong>Error</strong><pre>{html.escape(str(exc))}</pre></div>'
+        return (
+            jsonify(
+                {
+                    "html": error_html,
+                    "signature": json.dumps({"error": str(exc)}, sort_keys=True),
+                    "error": str(exc),
+                }
+            ),
+            500,
+        )
 
 
 @app.get("/apps/nemo-invoice-generator/jobs/<job_id>")
