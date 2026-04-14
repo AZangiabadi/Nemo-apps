@@ -6,6 +6,7 @@ dependencies = [
     "flask",
     "openpyxl",
     "pandas",
+    "python-dotenv",
     "reportlab",
     "requests",
 ]

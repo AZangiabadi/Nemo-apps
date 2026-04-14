@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
+from dotenv import load_dotenv
 from flask import (
     Flask,
     Response,
@@ -31,6 +32,7 @@ from nemo_user_importer import BASE_URL as NEMO_API_BASE_URL, NemoClient, run_im
 
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
 DEBUG_MODE = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 JUMBOTRON_API_TOKEN_ENV = "NEMO_JUMBOTRON_API_TOKEN"

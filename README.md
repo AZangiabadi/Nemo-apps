@@ -26,6 +26,18 @@ Create or refresh the local virtual environment with:
 uv sync
 ```
 
+If you use the Jumbotron app, create a local `.env` file first:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and set:
+
+```bash
+NEMO_JUMBOTRON_API_TOKEN=your-token-here
+```
+
 If the environment is already installed and you just want to run the app:
 
 ```bash
@@ -68,12 +80,13 @@ Useful notes:
 - the container uses `gunicorn` for production-style serving
 - the image is based on `python:3.12-slim`, which supports ARM64
 
-If you use the Jumbotron app, set the token before starting:
+If you use the Jumbotron app, the simplest option is to store the token in `.env` and then start Docker:
 
 ```bash
-export NEMO_JUMBOTRON_API_TOKEN="your-token-here"
 docker compose up --build
 ```
+
+Docker Compose automatically reads the local `.env` file in this project folder.
 
 To run in the background on the Mac mini:
 
@@ -112,6 +125,7 @@ docker compose down
 ### 3. Jumbotron
 
 - reads its NEMO API token from the `NEMO_JUMBOTRON_API_TOKEN` environment variable
+- local development can load that token from a project `.env` file
 - view tools currently in use from live usage events
 - view upcoming reservations for today and tomorrow
 - view today's cancellations, including auto-cancelled missed reservations
@@ -120,9 +134,10 @@ docker compose down
 Example launch:
 
 ```bash
-export NEMO_JUMBOTRON_API_TOKEN="your-token-here"
 uv run --no-sync main_app.py
 ```
+
+The app will read `.env` automatically if the file exists.
 
 ## Notes
 
