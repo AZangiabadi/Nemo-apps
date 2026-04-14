@@ -1,0 +1,18 @@
+services:
+  nemo-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: general-usage-nemo-app:latest
+    container_name: general-usage-nemo-app
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      NEMO_JUMBOTRON_API_TOKEN: ${NEMO_JUMBOTRON_API_TOKEN:-}
+      NEMO_JUMBOTRON_REFRESH_SECONDS: ${NEMO_JUMBOTRON_REFRESH_SECONDS:-15}
+      NEMO_JUMBOTRON_SCROLL_STEP_PX: ${NEMO_JUMBOTRON_SCROLL_STEP_PX:-1}
+      NEMO_JUMBOTRON_SCROLL_INTERVAL_MS: ${NEMO_JUMBOTRON_SCROLL_INTERVAL_MS:-50}
+    volumes:
+      - ./generated_invoices:/app/generated_invoices
+    restart: unless-stopped

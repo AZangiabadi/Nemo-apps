@@ -46,6 +46,53 @@ Then open:
 http://127.0.0.1:8000
 ```
 
+## Run With Docker
+
+This project now includes a `Dockerfile` and `docker-compose.yml`, which work well on Apple Silicon including a Mac mini M4.
+
+Build and start the app:
+
+```bash
+docker compose up --build
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+Useful notes:
+
+- generated invoice ZIPs are persisted to the local `generated_invoices/` folder through a Docker volume mount
+- the container uses `gunicorn` for production-style serving
+- the image is based on `python:3.12-slim`, which supports ARM64
+
+If you use the Jumbotron app, set the token before starting:
+
+```bash
+export NEMO_JUMBOTRON_API_TOKEN="your-token-here"
+docker compose up --build
+```
+
+To run in the background on the Mac mini:
+
+```bash
+docker compose up -d --build
+```
+
+To view logs:
+
+```bash
+docker compose logs -f
+```
+
+To stop:
+
+```bash
+docker compose down
+```
+
 ## Features
 
 ### 1. User Batch Import From Excel

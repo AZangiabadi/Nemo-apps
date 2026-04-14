@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 from flask import (
     Flask,
@@ -31,6 +32,7 @@ from nemo_user_importer import BASE_URL as NEMO_API_BASE_URL, NemoClient, run_im
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
+DEBUG_MODE = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 JUMBOTRON_API_TOKEN_ENV = "NEMO_JUMBOTRON_API_TOKEN"
 JUMBOTRON_REFRESH_SECONDS = int(os.environ.get("NEMO_JUMBOTRON_REFRESH_SECONDS", "15"))
 JUMBOTRON_SCROLL_STEP_PX = int(os.environ.get("NEMO_JUMBOTRON_SCROLL_STEP_PX", "1"))
@@ -1161,10 +1163,14 @@ def build_jumbotron_report(token: str) -> dict[str, object]:
     day_after_tomorrow_start = today_start + timedelta(days=2)
 
     usage_events = client.fetch_all("usage_events/?end__isnull=true")
+    reservation_query = urlencode(
+        {
+            "start__gte": today_start.isoformat(),
+            "start__lt": day_after_tomorrow_start.isoformat(),
+        }
+    )
     reservations = client.fetch_all(
-        "reservations/"
-        f"?start__gte={today_start.isoformat()}"
-        f"&start__lt={day_after_tomorrow_start.isoformat()}"
+        f"reservations/?{reservation_query}"
     )
 
     user_ids: set[int] = set()
@@ -2074,7 +2080,7 @@ def download_generated_file(job_id: str, file_index: int):
 def main() -> None:
     cleanup_old_generated_jobs()
     print(f"NEMO Tools Hub starting on http://127.0.0.1:{DEFAULT_PORT}")
-    app.run(host="0.0.0.0", port=DEFAULT_PORT, debug=True)
+    app.run(host="0.0.0.0", port=DEFAULT_PORT, debug=DEBUG_MODE)
 
 
 if __name__ == "__main__":

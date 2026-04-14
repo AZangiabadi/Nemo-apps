@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+.uv-cache
+.vscode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+generated_invoices/
+*.log
