@@ -648,6 +648,46 @@ def cleanup_old_generated_jobs(retention_days: int = INVOICE_RETENTION_DAYS) -> 
             day_dir.rmdir()
 
 
+def _resolve_existing_output_path(
+    source_path: Optional[str], fallback_dir: Optional[Path] = None
+) -> Optional[Path]:
+    if source_path:
+        candidate = Path(source_path)
+        if candidate.exists():
+            return candidate
+
+    if fallback_dir and fallback_dir.exists() and source_path:
+        fallback_candidate = fallback_dir / Path(source_path).name
+        if fallback_candidate.exists():
+            return fallback_candidate
+
+    return None
+
+
+def _collect_existing_generated_outputs(
+    generated_paths: list[str], fallback_dir: Optional[Path] = None
+) -> list[Path]:
+    resolved_paths: list[Path] = []
+    seen: set[Path] = set()
+
+    for source_path in generated_paths:
+        resolved = _resolve_existing_output_path(source_path, fallback_dir)
+        if resolved and resolved not in seen:
+            resolved_paths.append(resolved)
+            seen.add(resolved)
+
+    if resolved_paths or not fallback_dir or not fallback_dir.exists():
+        return resolved_paths
+
+    for pattern in ("*.xlsx", "*.pdf"):
+        for candidate in sorted(fallback_dir.glob(pattern)):
+            if candidate not in seen:
+                resolved_paths.append(candidate)
+                seen.add(candidate)
+
+    return resolved_paths
+
+
 def persist_invoice_outputs(
     *,
     job_id: str,
@@ -660,6 +700,7 @@ def persist_invoice_outputs(
     base_output_dir = ensure_generated_invoices_dir()
     job_output_dir = base_output_dir / created_at.strftime("%Y-%m-%d") / job_id
     job_output_dir.mkdir(parents=True, exist_ok=True)
+    fallback_dir = Path(generated_paths[0]).parent if generated_paths else None
 
     persisted_zip_path: Optional[str] = None
     persisted_files: list[str] = []
@@ -667,13 +708,27 @@ def persist_invoice_outputs(
     if make_zip:
         if not zip_path:
             raise ValueError("ZIP output was requested, but no ZIP file was created.")
-        destination = job_output_dir / Path(zip_path).name
-        shutil.move(zip_path, destination)
+        source_zip_path = _resolve_existing_output_path(zip_path, fallback_dir)
+        if not source_zip_path:
+            raise FileNotFoundError(
+                "ZIP file was created but could not be found for persistence. "
+                f"zip_path={zip_path!r}, fallback_dir={str(fallback_dir)!r}, "
+                f"job_output_dir={str(job_output_dir)!r}"
+            )
+        destination = job_output_dir / source_zip_path.name
+        shutil.move(str(source_zip_path), destination)
         persisted_zip_path = str(destination)
     else:
-        for source_path in generated_paths:
-            destination = job_output_dir / Path(source_path).name
-            shutil.move(source_path, destination)
+        existing_outputs = _collect_existing_generated_outputs(generated_paths, fallback_dir)
+        if not existing_outputs:
+            raise FileNotFoundError(
+                "Invoice files were created but could not be found for persistence. "
+                f"generated_paths={generated_paths!r}, fallback_dir={str(fallback_dir)!r}, "
+                f"job_output_dir={str(job_output_dir)!r}"
+            )
+        for source_path in existing_outputs:
+            destination = job_output_dir / source_path.name
+            shutil.move(str(source_path), destination)
             persisted_files.append(str(destination))
 
     metadata = {
@@ -1895,6 +1950,10 @@ def run_invoice_generator() -> str:
                 result_lines.append("Files are ready to download individually.")
 
             append_job_log(job_id, "Moving finished output into persistent storage")
+            append_job_log(
+                job_id,
+                f"Persistence inputs: zip_path={zip_path!r}, generated_paths={generated_paths!r}",
+            )
             selected_options = {
                 "generate_excel": generate_excel,
                 "generate_pdf": generate_pdf,
@@ -1944,10 +2003,10 @@ def run_invoice_generator() -> str:
                 append_job_log(job_id, line)
             shutil.rmtree(workdir, ignore_errors=True)
         except Exception as exc:
-            error_text = "".join(
-                traceback.format_exception_only(type(exc), exc)
-            ).strip()
+            error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             append_job_log(job_id, error_text)
+            for line in traceback.format_exc().strip().splitlines():
+                append_job_log(job_id, line)
             update_job(
                 job_id,
                 status="error",
