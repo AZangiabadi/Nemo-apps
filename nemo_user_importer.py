@@ -706,21 +706,16 @@ def refresh_projects(client: NemoClient) -> dict[str, dict[str, Any]]:
 
 def refresh_existing_maps_cache(client: NemoClient) -> None:
     print("Refreshing in-memory NEMO import cache in the background...")
-    refresh_client = (
-        client
-        if not client.dry_run
-        else NemoClient(client.token, base_url=client.base_url, dry_run=False)
-    )
-    accounts_by_name = refresh_accounts(refresh_client)
-    users_by_email = refresh_users(refresh_client)
-    projects_by_name = refresh_projects(refresh_client)
+    accounts_by_name = refresh_accounts(client)
+    users_by_email = refresh_users(client)
+    projects_by_name = refresh_projects(client)
     usernames = {
         normalize_text(user.get("username")).lower()
         for user in users_by_email.values()
         if normalize_text(user.get("username"))
     }
     store_cached_existing_maps(
-        refresh_client,
+        client,
         (accounts_by_name, users_by_email, projects_by_name, usernames),
     )
     print("Background NEMO import cache refresh complete.")
@@ -1089,11 +1084,11 @@ def run_import(
     else:
         print("Import complete.")
         advance("Import complete")
-    threading.Thread(
-        target=refresh_existing_maps_cache,
-        args=(client,),
-        daemon=True,
-    ).start()
+        threading.Thread(
+            target=refresh_existing_maps_cache,
+            args=(client,),
+            daemon=True,
+        ).start()
 
 
 def main() -> None:
