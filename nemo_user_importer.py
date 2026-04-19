@@ -1,6 +1,10 @@
 import csv
+import copy
+import hashlib
 import random
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -15,6 +19,7 @@ if TYPE_CHECKING:
 
 BASE_URL = "https://nemo.cni.columbia.edu/api/"
 TIMEOUT = 240
+IMPORT_LOOKUP_CACHE_TTL_SECONDS = 300
 
 
 ACCOUNT_TYPE_MAP = {
@@ -57,6 +62,14 @@ EXPECTED_HEADERS = {
 StatusCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int, str], None]
 
+IMPORT_LOOKUP_CACHE_LOCK = threading.Lock()
+IMPORT_LOOKUP_CACHE: dict[tuple[str, str], tuple[float, tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+]]] = {}
+
 
 @dataclass
 class SpreadsheetRow:
@@ -96,6 +109,13 @@ class NemoClient:
 
     def _url(self, endpoint: str) -> str:
         return self.base_url + endpoint.lstrip("/")
+
+    def cache_key(self) -> tuple[str, str]:
+        token = self.session.headers.get("Authorization", "")
+        return (
+            self.base_url,
+            hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        )
 
     def fetch_all(self, endpoint: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -404,6 +424,67 @@ def emit_status(callback: StatusCallback | None, message: str) -> None:
         callback(message)
 
 
+def _clone_existing_maps(
+    value: tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        set[str],
+    ],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+]:
+    accounts_by_name, users_by_email, projects_by_name, usernames = value
+    return (
+        copy.deepcopy(accounts_by_name),
+        copy.deepcopy(users_by_email),
+        copy.deepcopy(projects_by_name),
+        set(usernames),
+    )
+
+
+def load_cached_existing_maps(
+    client: NemoClient,
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+] | None:
+    cache_key = client.cache_key()
+    now = time.time()
+    with IMPORT_LOOKUP_CACHE_LOCK:
+        cached = IMPORT_LOOKUP_CACHE.get(cache_key)
+        if not cached:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            IMPORT_LOOKUP_CACHE.pop(cache_key, None)
+            return None
+        return _clone_existing_maps(payload)
+
+
+def store_cached_existing_maps(
+    client: NemoClient,
+    value: tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        set[str],
+    ],
+) -> None:
+    cache_key = client.cache_key()
+    payload = _clone_existing_maps(value)
+    with IMPORT_LOOKUP_CACHE_LOCK:
+        IMPORT_LOOKUP_CACHE[cache_key] = (
+            time.time() + IMPORT_LOOKUP_CACHE_TTL_SECONDS,
+            payload,
+        )
+
+
 def get_existing_maps(
     client: NemoClient,
     status_callback: StatusCallback | None = None,
@@ -413,6 +494,14 @@ def get_existing_maps(
     dict[str, dict[str, Any]],
     set[str],
 ]:
+    cached_maps = load_cached_existing_maps(client)
+    if cached_maps is not None:
+        emit_status(
+            status_callback,
+            "Using cached accounts, users, and projects from a recent NEMO import",
+        )
+        return cached_maps
+
     emit_status(status_callback, "Fetching existing accounts from the NEMO API")
     accounts = client.fetch_all("accounts/")
     emit_status(status_callback, "Fetching existing users from the NEMO API")
@@ -440,7 +529,9 @@ def get_existing_maps(
         for project in projects
         if normalize_text(project.get("name"))
     }
-    return accounts_by_name, users_by_email, projects_by_name, usernames
+    result = (accounts_by_name, users_by_email, projects_by_name, usernames)
+    store_cached_existing_maps(client, result)
+    return _clone_existing_maps(result)
 
 
 def build_account_payload(project_number: str, account_type: str) -> dict[str, Any]:
@@ -612,6 +703,25 @@ def refresh_projects(client: NemoClient) -> dict[str, dict[str, Any]]:
     }
 
 
+def refresh_existing_maps_cache(client: NemoClient) -> None:
+    if client.dry_run:
+        return
+    print("Refreshing in-memory NEMO import cache in the background...")
+    accounts_by_name = refresh_accounts(client)
+    users_by_email = refresh_users(client)
+    projects_by_name = refresh_projects(client)
+    usernames = {
+        normalize_text(user.get("username")).lower()
+        for user in users_by_email.values()
+        if normalize_text(user.get("username"))
+    }
+    store_cached_existing_maps(
+        client,
+        (accounts_by_name, users_by_email, projects_by_name, usernames),
+    )
+    print("Background NEMO import cache refresh complete.")
+
+
 def import_accounts(
     client: NemoClient,
     rows: list[SpreadsheetRow],
@@ -655,17 +765,6 @@ def import_accounts(
         )
         account_ids_by_project_number[project_number] = created_account["id"]
         account_ids_by_project_number[project_key] = created_account["id"]
-
-    if client.dry_run:
-        return account_ids_by_project_number
-
-    emit_status(status_callback, "Refreshing account list after account import")
-    refreshed_accounts = refresh_accounts(client)
-    for project_number in seen_projects:
-        account = refreshed_accounts.get(project_number)
-        if account:
-            account_ids_by_project_number[account["name"]] = account["id"]
-            account_ids_by_project_number[project_number] = account["id"]
 
     return account_ids_by_project_number
 
@@ -820,10 +919,7 @@ def update_pi_project_links(
             f"{account_id_for_project(account_ids_by_project_number, row.project_number)}"
         )
 
-    if client.dry_run:
-        return users_by_email
-
-    return refresh_users(client)
+    return users_by_email
 
 
 def import_other_users(
@@ -884,10 +980,7 @@ def import_other_users(
         )
         users_by_email[row.email] = created_user
 
-    if client.dry_run:
-        return users_by_email
-
-    return refresh_users(client)
+    return users_by_email
 
 
 def summarize(rows: list[SpreadsheetRow]) -> str:
@@ -992,6 +1085,11 @@ def run_import(
     else:
         print("Import complete.")
         advance("Import complete")
+        threading.Thread(
+            target=refresh_existing_maps_cache,
+            args=(client,),
+            daemon=True,
+        ).start()
 
 
 def main() -> None:

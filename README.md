@@ -55,35 +55,50 @@ uv run --no-sync main_app.py
 Then open:
 
 ```text
-http://127.0.0.1:8000
+https://127.0.0.1:8000
 ```
+
+Flask uses an ad-hoc self-signed certificate in this mode, so the browser warning is expected.
 
 ## Run With Docker
 
-This project now includes a `Dockerfile` and `docker-compose.yml`, which work well on Apple Silicon including a Mac mini M4.
+This project includes a Caddy-based deployment for later public-domain HTTPS.
+
+Set your domain in `.env`:
+
+```bash
+TOOLS_NEMO_DOMAIN=toolsnemo.cni.columbia.edu
+```
+
+Then make sure:
+
+- `toolsnemo.cni.columbia.edu` points to this machine's public IP address
+- inbound TCP ports `80` and `443` are open to this machine
+- no other service is already using ports `80` or `443`
 
 Build and start the app:
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
-Then open:
+Then open your public site:
 
 ```text
-http://127.0.0.1:8000
+https://toolsnemo.cni.columbia.edu
 ```
 
 Useful notes:
 
 - generated invoice ZIPs are persisted to the local `generated_invoices/` folder through a Docker volume mount
-- the container uses `gunicorn` for production-style serving
+- `nemo-app` uses `gunicorn` for production-style serving
+- `caddy` terminates TLS and renews certificates automatically once the domain resolves correctly
 - the image is based on `python:3.12-slim`, which supports ARM64
 
 If you use the Jumbotron app, the simplest option is to store the token in `.env` and then start Docker:
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 Docker Compose automatically reads the local `.env` file in this project folder.

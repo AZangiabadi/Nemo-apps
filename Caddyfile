@@ -1,0 +1,4 @@
+{$TOOLS_NEMO_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy nemo-app:8000
+}

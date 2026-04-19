@@ -53,6 +53,7 @@ import math
 import os
 import re
 import sys
+import time
 import traceback
 import zipfile
 from dataclasses import dataclass
@@ -118,6 +119,11 @@ INTERNAL_FACILITY_FEE_BY_APPLICATION = {
     "External Academia": 75.0,
     "Industry": 150.0,
 }
+
+NEMO_METADATA_CACHE_TTL_SECONDS = max(
+    0, int(os.environ.get("NEMO_INVOICE_METADATA_CACHE_SECONDS", "21600"))
+)
+NEMO_METADATA_CACHE: Dict[tuple[str, str, str], tuple[float, dict]] = {}
 
 # Application identifiers included in invoice generation
 INVOICE_APPLICATION_IDENTIFIERS = ("Local", "CDG", "Industry", "External Academia")
@@ -338,17 +344,60 @@ def _requests_required() -> None:
         )
 
 
-def fetch_all_projects(nemo_base: str, api_token: str) -> Dict[str, dict]:
+def _nemo_cache_key(kind: str, nemo_base: str, api_token: str) -> tuple[str, str, str]:
+    return (kind, nemo_base.rstrip("/"), api_token.strip())
+
+
+def _load_cached_nemo_metadata(
+    kind: str, nemo_base: str, api_token: str
+) -> Optional[dict]:
+    cache_key = _nemo_cache_key(kind, nemo_base, api_token)
+    cached = NEMO_METADATA_CACHE.get(cache_key)
+    if not cached:
+        return None
+    expires_at, payload = cached
+    if time.monotonic() >= expires_at:
+        NEMO_METADATA_CACHE.pop(cache_key, None)
+        return None
+    return dict(payload)
+
+
+def _store_cached_nemo_metadata(
+    kind: str, nemo_base: str, api_token: str, payload: dict
+) -> None:
+    cache_key = _nemo_cache_key(kind, nemo_base, api_token)
+    NEMO_METADATA_CACHE[cache_key] = (
+        time.monotonic() + NEMO_METADATA_CACHE_TTL_SECONDS,
+        dict(payload),
+    )
+
+
+def fetch_all_projects(
+    nemo_base: str,
+    api_token: str,
+    *,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Dict[str, dict]:
     """
     Fetch all projects and return a dict {project_name: project_json}.
     Works with DRF pagination ('results' + 'next') and with non-paginated lists.
     """
     _requests_required()
+    cached_projects = _load_cached_nemo_metadata("projects", nemo_base, api_token)
+    if cached_projects is not None:
+        if status_callback:
+            status_callback("Using cached NEMO project contacts")
+        return cached_projects
+
     url = nemo_base.rstrip("/") + "/api/projects/"
     headers = {"Authorization": f"Token {api_token}"}
     projects: Dict[str, dict] = {}
+    page_number = 0
 
     while url:
+        page_number += 1
+        if status_callback:
+            status_callback(f"Fetching NEMO project contacts (page {page_number})")
         r = requests.get(url, headers=headers, timeout=60)
         r.raise_for_status()
         payload = r.json()
@@ -365,6 +414,7 @@ def fetch_all_projects(nemo_base: str, api_token: str) -> Dict[str, dict]:
             if name:
                 projects[name] = p
 
+    _store_cached_nemo_metadata("projects", nemo_base, api_token, projects)
     return projects
 
 
@@ -387,16 +437,31 @@ def lab_for_consumable_category(category: object) -> Optional[str]:
     return None
 
 
-def fetch_all_consumables(nemo_base: str, api_token: str) -> Dict[str, str]:
+def fetch_all_consumables(
+    nemo_base: str,
+    api_token: str,
+    *,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Dict[str, str]:
     """
     Fetch all consumables and return a dict {normalized_consumable_name: lab_name}.
     """
     _requests_required()
+    cached_consumables = _load_cached_nemo_metadata("consumables", nemo_base, api_token)
+    if cached_consumables is not None:
+        if status_callback:
+            status_callback("Using cached NEMO consumable metadata")
+        return {str(key): str(value) for key, value in cached_consumables.items()}
+
     url = nemo_base.rstrip("/") + "/api/consumables/"
     headers = {"Authorization": f"Token {api_token}"}
     consumable_labs: Dict[str, str] = {}
+    page_number = 0
 
     while url:
+        page_number += 1
+        if status_callback:
+            status_callback(f"Fetching NEMO consumable data (page {page_number})")
         r = requests.get(url, headers=headers, timeout=60)
         r.raise_for_status()
         payload = r.json()
@@ -414,6 +479,7 @@ def fetch_all_consumables(nemo_base: str, api_token: str) -> Dict[str, str]:
             if name and lab:
                 consumable_labs[name] = lab
 
+    _store_cached_nemo_metadata("consumables", nemo_base, api_token, consumable_labs)
     return consumable_labs
 
 
@@ -1474,7 +1540,9 @@ def generate_invoices(
         if requests is None:
             raise RuntimeError("requests is not installed; cannot use an API token.")
         consumable_lab_map = fetch_all_consumables(
-            nemo_base=nemo_base, api_token=api_token
+            nemo_base=nemo_base,
+            api_token=api_token,
+            status_callback=status_callback,
         )
 
     if status_callback:
@@ -1490,7 +1558,11 @@ def generate_invoices(
             status_callback("Fetching project contact data from NEMO API")
         if progress_callback:
             progress_callback(0, 0, "Fetching NEMO project contacts")
-        project_map = fetch_all_projects(nemo_base=nemo_base, api_token=api_token)
+        project_map = fetch_all_projects(
+            nemo_base=nemo_base,
+            api_token=api_token,
+            status_callback=status_callback,
+        )
 
         pi_infos = df["Project"].apply(
             lambda p: resolve_pi_for_project(str(p), project_map)

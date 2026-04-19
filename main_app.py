@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 from flask import (
@@ -25,6 +26,7 @@ from flask import (
     send_file,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import nemo_invoice_generator_with_pdf as invoice_logic
 from nemo_invoice_generator_with_pdf import NEMO_BASE_URL, create_invoice_zip
@@ -36,7 +38,13 @@ load_dotenv(BASE_DIR / ".env")
 DEFAULT_PORT = int(os.environ.get("PORT", "8000"))
 DEBUG_MODE = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 JUMBOTRON_API_TOKEN_ENV = "NEMO_JUMBOTRON_API_TOKEN"
+JUMBOTRON_TIMEZONE_NAME = os.environ.get(
+    "NEMO_JUMBOTRON_TIMEZONE", "America/New_York"
+).strip() or "America/New_York"
 JUMBOTRON_REFRESH_SECONDS = int(os.environ.get("NEMO_JUMBOTRON_REFRESH_SECONDS", "15"))
+JUMBOTRON_CACHE_SECONDS = max(
+    0, int(os.environ.get("NEMO_JUMBOTRON_CACHE_SECONDS", "15"))
+)
 JUMBOTRON_SCROLL_STEP_PX = int(os.environ.get("NEMO_JUMBOTRON_SCROLL_STEP_PX", "1"))
 JUMBOTRON_SCROLL_INTERVAL_MS = int(
     os.environ.get("NEMO_JUMBOTRON_SCROLL_INTERVAL_MS", "50")
@@ -44,9 +52,22 @@ JUMBOTRON_SCROLL_INTERVAL_MS = int(
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".csv"}
 ALLOWED_INVOICE_SUFFIXES = {".csv"}
 GENERATED_INVOICES_DIR = BASE_DIR / "generated_invoices"
+JOB_STATE_DIR = BASE_DIR / ".job_state"
+INVOICE_RUN_LOG_PATH = BASE_DIR / "invoice_generator_runs.log"
 INVOICE_RETENTION_DAYS = 14
 JOBS: dict[str, dict[str, object]] = {}
 JOBS_LOCK = threading.Lock()
+JUMBOTRON_CACHE_LOCK = threading.Lock()
+JUMBOTRON_CACHE: dict[str, object] = {
+    "report": None,
+    "token": None,
+    "expires_at": None,
+}
+
+try:
+    JUMBOTRON_TIMEZONE = ZoneInfo(JUMBOTRON_TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    JUMBOTRON_TIMEZONE = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -88,6 +109,7 @@ def register_app(definition: AppDefinition) -> None:
 
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 
@@ -529,6 +551,13 @@ def save_upload(upload, *, allowed_suffixes: set[str], folder: str) -> Path:
     return destination
 
 
+def iso_timestamp(value: Optional[datetime] = None) -> str:
+    current = value or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    return current.isoformat(timespec="seconds")
+
+
 def find_website_logo_path() -> Optional[str]:
     for candidate in (
         "CNI_logo.png",
@@ -581,21 +610,79 @@ def find_batch_import_template_path() -> Optional[str]:
     return None
 
 
+def ensure_job_state_dir() -> Path:
+    JOB_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return JOB_STATE_DIR
+
+
+def job_state_path(job_id: str) -> Path:
+    return ensure_job_state_dir() / f"{job_id}.json"
+
+
+def write_job_state(job_id: str, job: dict[str, object]) -> None:
+    path = job_state_path(job_id)
+    payload = dict(job)
+    payload["files"] = list(job.get("files", []))
+    payload["file_downloads"] = list(job.get("file_downloads", []))
+    payload["log_lines"] = list(job.get("log_lines", []))
+    payload["job_id"] = job_id
+    temp_path = path.with_suffix(".json.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def load_job_state(job_id: str) -> Optional[dict[str, object]]:
+    path = job_state_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    job["files"] = list(job.get("files", []))
+    job["file_downloads"] = list(job.get("file_downloads", []))
+    job["log_lines"] = list(job.get("log_lines", []))
+    if "log" not in job:
+        job["log"] = "\n".join(str(line) for line in job["log_lines"])
+    return job
+
+
+def set_job(job_id: str, job: dict[str, object]) -> None:
+    job_copy = dict(job)
+    job_copy["files"] = list(job.get("files", []))
+    job_copy["file_downloads"] = list(job.get("file_downloads", []))
+    job_copy["log_lines"] = list(job.get("log_lines", []))
+    with JOBS_LOCK:
+        JOBS[job_id] = job_copy
+    write_job_state(job_id, job_copy)
+
+
 def update_job(job_id: str, **changes: object) -> None:
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-        if not job:
-            return
+        if job is None:
+            job = load_job_state(job_id)
+            if job is None:
+                return
+            JOBS[job_id] = job
         job.update(changes)
+        write_job_state(job_id, job)
 
 
 def get_job(job_id: str) -> Optional[dict[str, object]]:
     with JOBS_LOCK:
-        job = JOBS.get(job_id)
-        if not job:
-            return None
+        loaded_job = load_job_state(job_id)
+        if loaded_job is not None:
+            JOBS[job_id] = loaded_job
+            job = loaded_job
+        else:
+            job = JOBS.get(job_id)
+            if not job:
+                return None
         copied = dict(job)
         copied["files"] = list(job.get("files", []))
+        copied["file_downloads"] = list(job.get("file_downloads", []))
+        copied["log_lines"] = list(job.get("log_lines", []))
         return copied
 
 
@@ -603,12 +690,18 @@ def append_job_log(job_id: str, message: str) -> None:
     print(f"[job {job_id}] {message}", flush=True)
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-        if not job:
-            return
+        if job is None:
+            job = load_job_state(job_id)
+            if job is None:
+                return
+            JOBS[job_id] = job
         lines = list(job.get("log_lines", []))
         lines.append(str(message))
+        if len(lines) > 400:
+            lines = lines[-400:]
         job["log_lines"] = lines
         job["log"] = "\n".join(job["log_lines"])
+        write_job_state(job_id, job)
 
 
 def ensure_generated_invoices_dir() -> Path:
@@ -688,6 +781,66 @@ def _collect_existing_generated_outputs(
     return resolved_paths
 
 
+def resolve_invoice_outputs_for_download(
+    *,
+    make_zip: bool,
+    zip_path: Optional[str],
+    generated_paths: list[str],
+) -> tuple[Optional[str], list[str]]:
+    fallback_dir = Path(generated_paths[0]).parent if generated_paths else None
+
+    if make_zip:
+        if not zip_path:
+            raise ValueError("ZIP output was requested, but no ZIP file was created.")
+        resolved_zip_path = _resolve_existing_output_path(zip_path, fallback_dir)
+        if not resolved_zip_path:
+            raise FileNotFoundError(
+                "ZIP file was created but could not be found in the temporary output folder."
+            )
+        return str(resolved_zip_path), []
+
+    existing_outputs = _collect_existing_generated_outputs(generated_paths, fallback_dir)
+    if not existing_outputs:
+        raise FileNotFoundError(
+            "Invoice files were created but could not be found in the temporary output folder."
+        )
+    return None, [str(path) for path in existing_outputs]
+
+
+def append_invoice_run_log(
+    *,
+    job_id: str,
+    started_at: datetime,
+    finished_at: datetime,
+    status: str,
+    summary: str,
+    workdir: str,
+    generate_excel: bool,
+    generate_pdf: bool,
+    make_zip: bool,
+    xlsx_created: int = 0,
+    pdf_created: int = 0,
+    error: Optional[str] = None,
+) -> None:
+    entry = {
+        "job_id": job_id,
+        "started_at": iso_timestamp(started_at),
+        "finished_at": iso_timestamp(finished_at),
+        "status": status,
+        "summary": summary,
+        "workdir": workdir,
+        "generate_excel": generate_excel,
+        "generate_pdf": generate_pdf,
+        "make_zip": make_zip,
+        "xlsx_created": xlsx_created,
+        "pdf_created": pdf_created,
+    }
+    if error:
+        entry["error"] = error
+    with INVOICE_RUN_LOG_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+
+
 def persist_invoice_outputs(
     *,
     job_id: str,
@@ -733,7 +886,7 @@ def persist_invoice_outputs(
 
     metadata = {
         "job_id": job_id,
-        "created_at": created_at.isoformat(timespec="seconds"),
+        "created_at": iso_timestamp(created_at),
         "selected_options": selected_options,
         "output_file_paths": persisted_files,
         "zip_file_path": persisted_zip_path,
@@ -742,6 +895,34 @@ def persist_invoice_outputs(
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     return job_output_dir, persisted_zip_path, persisted_files, metadata_path
+
+
+def verify_persisted_invoice_outputs(
+    *,
+    make_zip: bool,
+    persisted_zip_path: Optional[str],
+    persisted_files: list[str],
+    metadata_path: Path,
+) -> None:
+    if make_zip:
+        if not persisted_zip_path or not Path(persisted_zip_path).exists():
+            raise FileNotFoundError(
+                "ZIP file was not found in persistent storage after moving it."
+            )
+    else:
+        if not persisted_files:
+            raise FileNotFoundError(
+                "No generated invoice files were found in persistent storage."
+            )
+        missing_paths = [path for path in persisted_files if not Path(path).exists()]
+        if missing_paths:
+            raise FileNotFoundError(
+                "Some generated invoice files were not found in persistent storage: "
+                + ", ".join(missing_paths)
+            )
+
+    if not metadata_path.exists():
+        raise FileNotFoundError("Invoice job metadata was not written to persistent storage.")
 
 
 @app.get("/assets/columbia-logo")
@@ -1038,7 +1219,8 @@ def build_invoice_job_page(job_id: str) -> str:
       const logEl = document.getElementById("job-log");
       const barEl = document.getElementById("job-progress-bar");
       const downloadsEl = document.getElementById("job-downloads");
-      let startedAtMs = null;
+      let timerStartedAtMs = null;
+      let timerFinishedAtMs = null;
       let timerHandle = null;
 
       function formatElapsed(ms) {{
@@ -1054,16 +1236,21 @@ def build_invoice_job_page(job_id: str) -> str:
       }}
 
       function renderTimer() {{
-        if (startedAtMs === null) {{
-          timerEl.textContent = "Elapsed time: 00:00";
+        if (timerStartedAtMs === null) {{
+          timerEl.textContent = "Elapsed time: waiting for API work to begin";
           return;
         }}
-        timerEl.textContent = `Elapsed time: ${{formatElapsed(Date.now() - startedAtMs)}}`;
+        const endMs = timerFinishedAtMs === null ? Date.now() : timerFinishedAtMs;
+        timerEl.textContent = `Elapsed time: ${{formatElapsed(endMs - timerStartedAtMs)}}`;
       }}
 
       timerHandle = window.setInterval(renderTimer, 1000);
 
       function renderDownloads(data) {{
+        if (!data.finished || data.status !== "completed") {{
+          downloadsEl.innerHTML = "";
+          return;
+        }}
         const links = [];
         if (data.zip_download_url) {{
           links.push(`<a class="button" href="${{data.zip_download_url}}">Download ZIP</a>`);
@@ -1077,39 +1264,56 @@ def build_invoice_job_page(job_id: str) -> str:
       }}
 
       async function poll() {{
-        const response = await fetch(`/apps/nemo-invoice-generator/jobs/${{jobId}}/status`);
-        if (!response.ok) {{
-          titleEl.textContent = "Job not found";
-          summaryEl.textContent = "The job data is no longer available.";
-          statusEl.className = "status error";
-          return;
-        }}
-
-        const data = await response.json();
-        const total = data.total || 0;
-        const current = data.current || 0;
-        const percent = total > 0 ? Math.round((current / total) * 100) : 0;
-
-        titleEl.textContent = data.title || "Invoice Job";
-        summaryEl.textContent = data.summary || "";
-        if (data.started_at) {{
-          const parsed = Date.parse(data.started_at);
-          if (!Number.isNaN(parsed)) {{
-            startedAtMs = parsed;
+        try {{
+          const response = await fetch(`/apps/nemo-invoice-generator/jobs/${{jobId}}/status`, {{
+            cache: "no-store",
+          }});
+          if (!response.ok) {{
+            titleEl.textContent = "Job not found";
+            summaryEl.textContent = "The job data is no longer available.";
+            statusEl.className = "status error";
+            return;
           }}
-        }}
-        renderTimer();
-        logEl.textContent = data.log || "";
-        barEl.style.width = `${{percent}}%`;
-        statusEl.className = `status ${{data.status_class || "info"}}`;
-        renderDownloads(data);
 
-        if (data.finished) {{
-          if (timerHandle !== null) {{
-            window.clearInterval(timerHandle);
-            timerHandle = null;
+          const data = await response.json();
+          const total = data.total || 0;
+          const current = data.current || 0;
+          const percent = total > 0 ? Math.round((current / total) * 100) : 0;
+
+          titleEl.textContent = data.title || "Invoice Job";
+          summaryEl.textContent = data.summary || "";
+          if (data.timer_started_at) {{
+            const parsed = Date.parse(data.timer_started_at);
+            if (!Number.isNaN(parsed)) {{
+              timerStartedAtMs = parsed;
+            }}
           }}
-          return;
+          if (data.links_ready_at) {{
+            const parsedFinished = Date.parse(data.links_ready_at);
+            if (!Number.isNaN(parsedFinished)) {{
+              timerFinishedAtMs = parsedFinished;
+            }}
+          }}
+          renderTimer();
+          logEl.textContent = data.log || "";
+          barEl.style.width = `${{percent}}%`;
+          statusEl.className = `status ${{data.status_class || "info"}}`;
+          renderDownloads(data);
+
+          if (data.finished) {{
+            if (timerFinishedAtMs === null) {{
+              timerFinishedAtMs = Date.now();
+              renderTimer();
+            }}
+            if (timerHandle !== null) {{
+              window.clearInterval(timerHandle);
+              timerHandle = null;
+            }}
+            return;
+          }}
+        }} catch (error) {{
+          console.error("Invoice job polling failed", error);
+          summaryEl.textContent = "Connection hiccup while checking job status. Retrying...";
         }}
         window.setTimeout(poll, 1200);
       }}
@@ -1133,7 +1337,7 @@ def format_dashboard_datetime(value: object) -> str:
     parsed = parse_api_datetime(value)
     if not parsed:
         return "—"
-    local_value = parsed.astimezone()
+    local_value = parsed.astimezone(JUMBOTRON_TIMEZONE)
     return local_value.strftime("%a, %b %d, %Y %I:%M %p")
 
 
@@ -1214,7 +1418,7 @@ def build_dashboard_table(
 
 def build_jumbotron_report(token: str) -> dict[str, object]:
     client = NemoClient(token, base_url=NEMO_API_BASE_URL)
-    now = datetime.now().astimezone()
+    now = datetime.now(JUMBOTRON_TIMEZONE)
     today_start = datetime.combine(now.date(), time.min, tzinfo=now.tzinfo)
     tomorrow_start = today_start + timedelta(days=1)
     day_after_tomorrow_start = today_start + timedelta(days=2)
@@ -1337,6 +1541,35 @@ def build_jumbotron_report(token: str) -> dict[str, object]:
         "upcoming_rows": upcoming_rows,
         "cancellation_rows": cancellation_rows,
     }
+
+
+def get_jumbotron_report(token: str) -> dict[str, object]:
+    now = datetime.now(JUMBOTRON_TIMEZONE)
+    with JUMBOTRON_CACHE_LOCK:
+        cached_report = JUMBOTRON_CACHE.get("report")
+        cached_token = JUMBOTRON_CACHE.get("token")
+        expires_at = JUMBOTRON_CACHE.get("expires_at")
+        if (
+            JUMBOTRON_CACHE_SECONDS > 0
+            and isinstance(cached_report, dict)
+            and cached_token == token
+            and isinstance(expires_at, datetime)
+            and now < expires_at
+        ):
+            return cached_report
+
+    report = build_jumbotron_report(token)
+
+    if JUMBOTRON_CACHE_SECONDS > 0:
+        with JUMBOTRON_CACHE_LOCK:
+            JUMBOTRON_CACHE["report"] = report
+            JUMBOTRON_CACHE["token"] = token
+            JUMBOTRON_CACHE["expires_at"] = (
+                datetime.now(JUMBOTRON_TIMEZONE)
+                + timedelta(seconds=JUMBOTRON_CACHE_SECONDS)
+            )
+
+    return report
 
 
 def build_jumbotron_content(report: dict[str, object]) -> str:
@@ -1668,7 +1901,7 @@ def app_page(slug: str) -> str:
         return build_invoice_page()
     if slug == "jumbotron":
         try:
-            report = build_jumbotron_report(get_jumbotron_token())
+            report = get_jumbotron_report(get_jumbotron_token())
         except Exception as exc:
             return build_jumbotron_page(error=str(exc))
         return build_jumbotron_page(report=report)
@@ -1707,8 +1940,9 @@ def run_user_batch_import() -> str:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return build_import_page(error=str(exc), status="error")
 
-    with JOBS_LOCK:
-        JOBS[job_id] = {
+    set_job(
+        job_id,
+        {
             "status": "running",
             "title": "Batch import running",
             "summary": "Preparing import job.",
@@ -1717,8 +1951,9 @@ def run_user_batch_import() -> str:
             "log": "Preparing batch import job...",
             "log_lines": ["Preparing batch import job..."],
             "mode": "Dry Run" if dry_run else "Live Import",
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-        }
+            "started_at": iso_timestamp(),
+        },
+    )
 
     def worker() -> None:
         output = io.StringIO()
@@ -1834,9 +2069,8 @@ def run_invoice_generator() -> str:
             error="PDF output was selected, but reportlab is not installed in this Python environment."
         )
 
-    cleanup_old_generated_jobs()
     job_id = str(uuid.uuid4())
-    created_at = datetime.now()
+    created_at = datetime.now().astimezone()
     workdir = tempfile.mkdtemp(prefix=f"invoice_{job_id}_")
     try:
         csv_path = save_upload(
@@ -1848,8 +2082,9 @@ def run_invoice_generator() -> str:
         shutil.rmtree(workdir, ignore_errors=True)
         return build_invoice_page(error=str(exc))
 
-    with JOBS_LOCK:
-        JOBS[job_id] = {
+    set_job(
+        job_id,
+        {
             "status": "running",
             "title": "Starting invoice generation",
             "summary": "Preparing uploaded CSV.",
@@ -1860,18 +2095,23 @@ def run_invoice_generator() -> str:
             "zip_path": None,
             "files": [],
             "workdir": workdir,
-            "job_output_dir": None,
-            "metadata_path": None,
             "file_downloads": [],
             "zip_download_url": None,
-            "started_at": created_at.isoformat(timespec="seconds"),
-        }
+            "started_at": iso_timestamp(created_at),
+            "timer_started_at": None,
+            "links_ready_at": None,
+        },
+    )
 
     def worker() -> None:
         try:
             outdir = Path(workdir) / "invoices"
             outdir.mkdir(parents=True, exist_ok=True)
             logo_path = find_pdf_logo_path() if generate_pdf else None
+            update_job(
+                job_id,
+                timer_started_at=iso_timestamp(),
+            )
 
             def on_status(message: str) -> None:
                 append_job_log(job_id, message)
@@ -1949,26 +2189,18 @@ def run_invoice_generator() -> str:
             else:
                 result_lines.append("Files are ready to download individually.")
 
-            append_job_log(job_id, "Moving finished output into persistent storage")
+            append_job_log(job_id, "Verifying temporary output files")
             append_job_log(
                 job_id,
-                f"Persistence inputs: zip_path={zip_path!r}, generated_paths={generated_paths!r}",
+                f"Temporary output inputs: zip={'yes' if zip_path else 'no'}, generated_files={len(generated_paths)}",
             )
-            selected_options = {
-                "generate_excel": generate_excel,
-                "generate_pdf": generate_pdf,
-                "make_zip": make_zip,
-            }
-            job_output_dir, persisted_zip_path, persisted_files, metadata_path = (
-                persist_invoice_outputs(
-                    job_id=job_id,
-                    created_at=created_at,
-                    make_zip=make_zip,
-                    zip_path=zip_path,
-                    generated_paths=generated_paths,
-                    selected_options=selected_options,
-                )
+            resolved_zip_path, resolved_files = resolve_invoice_outputs_for_download(
+                make_zip=make_zip,
+                zip_path=zip_path,
+                generated_paths=generated_paths,
             )
+            links_ready_at = iso_timestamp()
+            append_job_log(job_id, "Temporary output verified. Download links are ready.")
 
             file_downloads = []
             if not make_zip:
@@ -1977,9 +2209,9 @@ def run_invoice_generator() -> str:
                         "label": Path(path).name,
                         "url": f"/download/{job_id}/files/{index}",
                     }
-                    for index, path in enumerate(persisted_files)
+                    for index, path in enumerate(resolved_files)
                 ]
-            if persisted_zip_path:
+            if resolved_zip_path:
                 zip_download_url = f"/download/{job_id}"
 
             update_job(
@@ -1992,16 +2224,27 @@ def run_invoice_generator() -> str:
                     if (job := get_job(job_id))
                     else 0
                 ),
-                zip_path=persisted_zip_path,
-                files=persisted_files,
+                zip_path=resolved_zip_path,
+                files=resolved_files,
                 file_downloads=file_downloads,
                 zip_download_url=zip_download_url,
-                job_output_dir=str(job_output_dir),
-                metadata_path=str(metadata_path),
+                links_ready_at=links_ready_at,
             )
             for line in result_lines:
                 append_job_log(job_id, line)
-            shutil.rmtree(workdir, ignore_errors=True)
+            append_invoice_run_log(
+                job_id=job_id,
+                started_at=created_at,
+                finished_at=datetime.now(),
+                status="success",
+                summary="Invoice generation completed successfully.",
+                workdir=workdir,
+                generate_excel=generate_excel,
+                generate_pdf=generate_pdf,
+                make_zip=make_zip,
+                xlsx_created=xlsx_created,
+                pdf_created=pdf_created,
+            )
         except Exception as exc:
             error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
             append_job_log(job_id, error_text)
@@ -2013,6 +2256,18 @@ def run_invoice_generator() -> str:
                 title="Invoice generation failed",
                 summary="The job stopped before completion.",
             )
+            append_invoice_run_log(
+                job_id=job_id,
+                started_at=created_at,
+                finished_at=datetime.now(),
+                status="failed",
+                summary="Invoice generation failed.",
+                workdir=workdir,
+                generate_excel=generate_excel,
+                generate_pdf=generate_pdf,
+                make_zip=make_zip,
+                error=error_text,
+            )
             shutil.rmtree(workdir, ignore_errors=True)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -2022,7 +2277,7 @@ def run_invoice_generator() -> str:
 @app.get("/apps/jumbotron/data")
 def jumbotron_data():
     try:
-        report = build_jumbotron_report(get_jumbotron_token())
+        report = get_jumbotron_report(get_jumbotron_token())
         payload = {
             "html": build_jumbotron_content(report),
             "signature": json.dumps(report, sort_keys=True),
@@ -2074,20 +2329,22 @@ def invoice_job_status(job_id: str):
             "summary": job.get("summary", ""),
             "current": job.get("current", 0),
             "total": job.get("total", 0),
-            "log": job.get("log", ""),
+            "log": "\n".join(job.get("log_lines", [])[-80:]),
             "status": status,
             "status_class": status_class,
             "finished": status in {"completed", "error"},
             "zip_download_url": job.get("zip_download_url"),
             "file_downloads": job.get("file_downloads", []),
             "started_at": job.get("started_at", ""),
+            "timer_started_at": job.get("timer_started_at", ""),
+            "links_ready_at": job.get("links_ready_at", ""),
         }
     )
 
 
 @app.get("/download/<job_id>")
 def download(job_id: str):
-    job = JOBS.get(job_id)
+    job = get_job(job_id)
     if not job:
         return (
             render_page(
@@ -2140,8 +2397,13 @@ def download_generated_file(job_id: str, file_index: int):
 
 def main() -> None:
     cleanup_old_generated_jobs()
-    print(f"NEMO Tools Hub starting on http://127.0.0.1:{DEFAULT_PORT}")
-    app.run(host="0.0.0.0", port=DEFAULT_PORT, debug=DEBUG_MODE)
+    print(f"NEMO Tools Hub starting on https://127.0.0.1:{DEFAULT_PORT}")
+    app.run(
+        host="0.0.0.0",
+        port=DEFAULT_PORT,
+        debug=DEBUG_MODE,
+        ssl_context="adhoc",
+    )
 
 
 if __name__ == "__main__":
