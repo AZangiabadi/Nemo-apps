@@ -45,7 +45,7 @@ HTML_PAGE = """
       </label>
 
       <label>
-        <input type="checkbox" name="bypass_cache"> Bypass cache and use live API data
+        <input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data
       </label>
 
       <button type="submit">Generate ZIP</button>

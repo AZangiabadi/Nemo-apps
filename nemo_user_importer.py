@@ -687,6 +687,30 @@ def display_name_for_user(user: dict[str, Any]) -> str:
     return full_name
 
 
+def populate_missing_row_fields_from_existing_user(
+    row: SpreadsheetRow,
+    existing_user: dict[str, Any],
+) -> None:
+    existing_email = normalize_email(existing_user.get("email"))
+    existing_username = normalize_text(existing_user.get("username"))
+    existing_name = display_name_for_user(existing_user)
+
+    if not row.email and existing_email:
+        row.email = existing_email
+        print(
+            f"Filled missing email for row {row.row_number} from existing user "
+            f"'{existing_username or existing_email}'."
+        )
+    if not row.uni and existing_username:
+        row.uni = existing_username
+    if not row.name and existing_name:
+        row.name = existing_name
+        print(
+            f"Filled missing name for row {row.row_number} from existing user "
+            f"'{existing_username or existing_email}'."
+        )
+
+
 def populate_missing_row_fields_from_existing_users(
     rows: list[SpreadsheetRow],
     users_by_email: dict[str, dict[str, Any]],
@@ -697,24 +721,7 @@ def populate_missing_row_fields_from_existing_users(
         if not existing_user:
             continue
 
-        existing_email = normalize_email(existing_user.get("email"))
-        existing_username = normalize_text(existing_user.get("username"))
-        existing_name = display_name_for_user(existing_user)
-
-        if not row.email and existing_email:
-            row.email = existing_email
-            print(
-                f"Filled missing email for row {row.row_number} from existing user "
-                f"'{existing_username or existing_email}'."
-            )
-        if not row.uni and existing_username:
-            row.uni = existing_username
-        if not row.name and existing_name:
-            row.name = existing_name
-            print(
-                f"Filled missing name for row {row.row_number} from existing user "
-                f"'{existing_username or existing_email}'."
-            )
+        populate_missing_row_fields_from_existing_user(row, existing_user)
 
 
 def build_account_payload(project_number: str, account_type: str) -> dict[str, Any]:
@@ -976,6 +983,7 @@ def import_pis(
         existing_user = existing_user_for_row(row, users_by_email, users_by_username)
 
         if existing_user:
+            populate_missing_row_fields_from_existing_user(row, existing_user)
             print(
                 f"PI already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"
@@ -1128,6 +1136,7 @@ def import_other_users(
         existing_user = existing_user_for_row(row, users_by_email, users_by_username)
 
         if existing_user:
+            populate_missing_row_fields_from_existing_user(row, existing_user)
             print(
                 f"User already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"

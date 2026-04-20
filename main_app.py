@@ -1025,7 +1025,7 @@ def build_import_page(
           <div class="help">Keep this checked if you want to preview changes before sending them to NEMO.</div>
         </div>
         <div>
-          <label><input type="checkbox" name="bypass_cache"> Bypass cache and use live API data</label>
+          <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
           <div class="help">Check this to ignore recent cached NEMO accounts, users, projects, and invoice metadata.</div>
         </div>
         <div class="actions">
@@ -1185,7 +1185,7 @@ def build_invoice_page(
           <div class="help">If ZIP is unchecked, the finished page will show individual file download links instead.</div>
         </fieldset>
         <div>
-          <label><input type="checkbox" name="bypass_cache"> Bypass cache and use live API data</label>
+          <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
           <div class="help">Check this to force fresh NEMO project and consumable metadata instead of recent cached API results.</div>
         </div>
         <div class="actions">

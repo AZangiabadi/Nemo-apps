@@ -1594,6 +1594,11 @@ def generate_invoices(
     processed_invoices = 0
 
     if status_callback:
+        status_callback("Building PI contact summary workbook")
+    contact_report_path = create_pi_contact_report(outdir, df)
+    generated_paths.append(contact_report_path)
+
+    if status_callback:
         status_callback(f"Prepared {total_invoices} invoice group(s)")
     if progress_callback:
         progress_callback(0, total_invoices, "Prepared invoice groups")
@@ -1680,6 +1685,59 @@ def generate_invoices(
     return xlsx_created, pdf_created, df, generated_paths
 
 
+def create_pi_contact_report(outdir: str, df: pd.DataFrame) -> str:
+    month_labels = sorted({month_label(str(p)) for p in df["Period"].dropna().unique()})
+    if len(month_labels) == 1:
+        filename = f"CNI-Nemo-Invoice-PI-Contacts-{month_labels[0]}.xlsx"
+    else:
+        filename = (
+            f"CNI-Nemo-Invoice-PI-Contacts-"
+            f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+        )
+
+    report_df = (
+        df.loc[:, ["PI_display_name", "PI_email", "Period"]]
+        .copy()
+        .rename(
+            columns={
+                "PI_display_name": "PI Name",
+                "PI_email": "PI Email",
+                "Period": "Billing Period",
+            }
+        )
+    )
+    report_df["PI Name"] = report_df["PI Name"].fillna("").astype(str).str.strip()
+    report_df["PI Email"] = report_df["PI Email"].fillna("").astype(str).str.strip()
+    report_df["Billing Period"] = (
+        report_df["Billing Period"].fillna("").astype(str).str.strip()
+    )
+    report_df = report_df.drop_duplicates().sort_values(
+        by=["PI Name", "Billing Period", "PI Email"], kind="stable"
+    )
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "PI Contacts"
+    worksheet.append(["PI Name", "PI Email", "Billing Period"])
+
+    for row in report_df.itertuples(index=False):
+        worksheet.append(list(row))
+
+    for column_cells in worksheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[column_cells[0].column_letter].width = min(
+            max(max_length + 2, 14), 48
+        )
+
+    output_path = os.path.join(outdir, filename)
+    workbook.save(output_path)
+    try:
+        workbook.close()
+    except Exception:
+        pass
+    return output_path
+
+
 def create_invoice_zip(
     outdir: str, df: pd.DataFrame, remove_members: bool = True
 ) -> Optional[str]:
@@ -1701,8 +1759,7 @@ def create_invoice_zip(
             continue
         if not (name.endswith(".xlsx") or name.endswith(".pdf")):
             continue
-        if any(f" {ml}." in name for ml in month_labels):
-            members.append(p)
+        members.append(p)
 
     if not members:
         return None
