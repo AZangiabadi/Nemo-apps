@@ -1,6 +1,7 @@
 import csv
 import copy
 import hashlib
+import json
 import random
 import sys
 import threading
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 BASE_URL = "https://nemo.cni.columbia.edu/api/"
 TIMEOUT = 240
 IMPORT_LOOKUP_CACHE_TTL_SECONDS = 300
+IMPORT_LOOKUP_CACHE_DIR = Path(__file__).resolve().parent / ".import_lookup_cache"
 
 
 ACCOUNT_TYPE_MAP = {
@@ -64,6 +66,7 @@ ProgressCallback = Callable[[int, int, str], None]
 
 IMPORT_LOOKUP_CACHE_LOCK = threading.Lock()
 IMPORT_LOOKUP_CACHE: dict[tuple[str, str], tuple[float, tuple[
+    dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
@@ -405,10 +408,10 @@ def validate_rows(rows: list[SpreadsheetRow]) -> list[str]:
     errors: list[str] = []
 
     for row in rows:
-        if not row.name:
-            errors.append(f"Row {row.row_number}: missing Name")
-        if not row.email:
-            errors.append(f"Row {row.row_number}: missing email")
+        if not row.name and not row.uni:
+            errors.append(f"Row {row.row_number}: missing Name and UNI")
+        if not row.email and not row.uni:
+            errors.append(f"Row {row.row_number}: missing email and UNI")
         if not row.project_number:
             errors.append(f"Row {row.row_number}: missing Project Number")
         normalized_type = row.normalized_account_type
@@ -430,26 +433,114 @@ def _clone_existing_maps(
         dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
         set[str],
     ],
 ) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
     set[str],
 ]:
-    accounts_by_name, users_by_email, projects_by_name, usernames = value
+    accounts_by_name, users_by_email, users_by_username, projects_by_name, usernames = value
     return (
         copy.deepcopy(accounts_by_name),
         copy.deepcopy(users_by_email),
+        copy.deepcopy(users_by_username),
         copy.deepcopy(projects_by_name),
         set(usernames),
     )
 
 
+def _persistent_import_cache_path(cache_key: tuple[str, str]) -> Path:
+    base_url, token_hash = cache_key
+    stable_name = hashlib.sha256(
+        f"{base_url}|{token_hash}".encode("utf-8")
+    ).hexdigest()
+    return IMPORT_LOOKUP_CACHE_DIR / f"{stable_name}.json"
+
+
+def _serialize_existing_maps(
+    value: tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        set[str],
+    ],
+) -> dict[str, Any]:
+    (
+        accounts_by_name,
+        users_by_email,
+        users_by_username,
+        projects_by_name,
+        usernames,
+    ) = value
+    return {
+        "accounts_by_name": accounts_by_name,
+        "users_by_email": users_by_email,
+        "users_by_username": users_by_username,
+        "projects_by_name": projects_by_name,
+        "usernames": sorted(usernames),
+    }
+
+
+def _deserialize_existing_maps(
+    payload: dict[str, Any],
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+]:
+    return (
+        dict(payload.get("accounts_by_name", {})),
+        dict(payload.get("users_by_email", {})),
+        dict(payload.get("users_by_username", {})),
+        dict(payload.get("projects_by_name", {})),
+        set(payload.get("usernames", [])),
+    )
+
+
+def load_persistent_cached_existing_maps(
+    client: NemoClient,
+) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[str],
+] | None:
+    cache_key = client.cache_key()
+    cache_path = _persistent_import_cache_path(cache_key)
+    if not cache_path.exists():
+        return None
+
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    expires_at = cached.get("expires_at")
+    if not isinstance(expires_at, (int, float)) or expires_at <= time.time():
+        cache_path.unlink(missing_ok=True)
+        return None
+
+    payload = _deserialize_existing_maps(dict(cached.get("payload", {})))
+    with IMPORT_LOOKUP_CACHE_LOCK:
+        IMPORT_LOOKUP_CACHE[cache_key] = (
+            float(expires_at),
+            _clone_existing_maps(payload),
+        )
+    return _clone_existing_maps(payload)
+
+
 def load_cached_existing_maps(
     client: NemoClient,
 ) -> tuple[
+    dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
@@ -460,17 +551,21 @@ def load_cached_existing_maps(
     with IMPORT_LOOKUP_CACHE_LOCK:
         cached = IMPORT_LOOKUP_CACHE.get(cache_key)
         if not cached:
-            return None
-        expires_at, payload = cached
-        if expires_at <= now:
-            IMPORT_LOOKUP_CACHE.pop(cache_key, None)
-            return None
-        return _clone_existing_maps(payload)
+            cached = None
+        else:
+            expires_at, payload = cached
+            if expires_at <= now:
+                IMPORT_LOOKUP_CACHE.pop(cache_key, None)
+                cached = None
+            else:
+                return _clone_existing_maps(payload)
+    return load_persistent_cached_existing_maps(client)
 
 
 def store_cached_existing_maps(
     client: NemoClient,
     value: tuple[
+        dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
         dict[str, dict[str, Any]],
@@ -484,24 +579,43 @@ def store_cached_existing_maps(
             time.time() + IMPORT_LOOKUP_CACHE_TTL_SECONDS,
             payload,
         )
+    try:
+        IMPORT_LOOKUP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _persistent_import_cache_path(cache_key)
+        expires_at = time.time() + IMPORT_LOOKUP_CACHE_TTL_SECONDS
+        serialized = {
+            "expires_at": expires_at,
+            "payload": _serialize_existing_maps(payload),
+        }
+        temp_path = cache_path.with_name(
+            f"{cache_path.stem}.{threading.get_ident()}.tmp"
+        )
+        temp_path.write_text(json.dumps(serialized), encoding="utf-8")
+        temp_path.replace(cache_path)
+    except Exception:
+        # Keep the in-memory cache working even if disk persistence is unavailable.
+        pass
 
 
 def get_existing_maps(
     client: NemoClient,
+    use_cache: bool = True,
     status_callback: StatusCallback | None = None,
 ) -> tuple[
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
     set[str],
 ]:
-    cached_maps = load_cached_existing_maps(client)
-    if cached_maps is not None:
-        emit_status(
-            status_callback,
-            "Using cached accounts, users, and projects from a recent NEMO import",
-        )
-        return cached_maps
+    if use_cache:
+        cached_maps = load_cached_existing_maps(client)
+        if cached_maps is not None:
+            emit_status(
+                status_callback,
+                "Using cached accounts, users, and projects from a recent NEMO import",
+            )
+            return cached_maps
 
     emit_status(status_callback, "Fetching existing accounts from the NEMO API")
     accounts = client.fetch_all("accounts/")
@@ -520,6 +634,11 @@ def get_existing_maps(
         for user in users
         if normalize_email(user.get("email"))
     }
+    users_by_username = {
+        normalize_text(user.get("username")).lower(): user
+        for user in users
+        if normalize_text(user.get("username"))
+    }
     usernames = {
         normalize_text(user.get("username")).lower()
         for user in users
@@ -530,9 +649,72 @@ def get_existing_maps(
         for project in projects
         if normalize_text(project.get("name"))
     }
-    result = (accounts_by_name, users_by_email, projects_by_name, usernames)
+    result = (
+        accounts_by_name,
+        users_by_email,
+        users_by_username,
+        projects_by_name,
+        usernames,
+    )
     store_cached_existing_maps(client, result)
     return _clone_existing_maps(result)
+
+
+def existing_user_for_row(
+    row: SpreadsheetRow,
+    users_by_email: dict[str, dict[str, Any]],
+    users_by_username: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    if row.email:
+        existing_user = users_by_email.get(row.email)
+        if existing_user:
+            return existing_user
+    if row.uni:
+        existing_user = users_by_username.get(row.uni.lower())
+        if existing_user:
+            print(
+                f"Matched existing user by UNI for row {row.row_number}: "
+                f"username={row.uni}"
+            )
+        return existing_user
+    return None
+
+
+def display_name_for_user(user: dict[str, Any]) -> str:
+    first_name = normalize_text(user.get("first_name"))
+    last_name = normalize_text(user.get("last_name"))
+    full_name = " ".join(part for part in (first_name, last_name) if part)
+    return full_name
+
+
+def populate_missing_row_fields_from_existing_users(
+    rows: list[SpreadsheetRow],
+    users_by_email: dict[str, dict[str, Any]],
+    users_by_username: dict[str, dict[str, Any]],
+) -> None:
+    for row in rows:
+        existing_user = existing_user_for_row(row, users_by_email, users_by_username)
+        if not existing_user:
+            continue
+
+        existing_email = normalize_email(existing_user.get("email"))
+        existing_username = normalize_text(existing_user.get("username"))
+        existing_name = display_name_for_user(existing_user)
+
+        if not row.email and existing_email:
+            row.email = existing_email
+            print(
+                f"Filled missing email for row {row.row_number} from existing user "
+                f"'{existing_username or existing_email}'."
+            )
+        if not row.uni and existing_username:
+            row.uni = existing_username
+        if not row.name and existing_name:
+            row.name = existing_name
+            print(
+                f"Filled missing name for row {row.row_number} from existing user "
+                f"'{existing_username or existing_email}'."
+            )
 
 
 def build_account_payload(project_number: str, account_type: str) -> dict[str, Any]:
@@ -708,6 +890,11 @@ def refresh_existing_maps_cache(client: NemoClient) -> None:
     print("Refreshing in-memory NEMO import cache in the background...")
     accounts_by_name = refresh_accounts(client)
     users_by_email = refresh_users(client)
+    users_by_username = {
+        normalize_text(user.get("username")).lower(): user
+        for user in users_by_email.values()
+        if normalize_text(user.get("username"))
+    }
     projects_by_name = refresh_projects(client)
     usernames = {
         normalize_text(user.get("username")).lower()
@@ -716,7 +903,13 @@ def refresh_existing_maps_cache(client: NemoClient) -> None:
     }
     store_cached_existing_maps(
         client,
-        (accounts_by_name, users_by_email, projects_by_name, usernames),
+        (
+            accounts_by_name,
+            users_by_email,
+            users_by_username,
+            projects_by_name,
+            usernames,
+        ),
     )
     print("Background NEMO import cache refresh complete.")
 
@@ -729,7 +922,11 @@ def import_accounts(
 ) -> dict[str, int]:
     account_ids_by_project_number: dict[str, int] = {}
     seen_projects: set[str] = set()
-    emit_status(status_callback, "Processing project accounts")
+    unique_project_count = len({row.project_number.lower() for row in rows if row.project_number})
+    emit_status(
+        status_callback,
+        f"Processing {unique_project_count} project account(s)",
+    )
 
     for row in rows:
         project_number = row.project_number
@@ -740,10 +937,6 @@ def import_accounts(
 
         existing_account = accounts_by_name.get(project_key)
         if existing_account:
-            emit_status(
-                status_callback,
-                f"Checking account for project {project_number}: already exists",
-            )
             print(
                 f"Account already exists for '{project_number}': "
                 f"{existing_account.get('name')} (id={existing_account.get('id')})"
@@ -753,10 +946,6 @@ def import_accounts(
             continue
 
         payload = build_account_payload(project_number, row.normalized_account_type)
-        emit_status(
-            status_callback,
-            f"Creating account for project {project_number}",
-        )
         created_account = client.post("accounts/", payload)
         print(
             f"Created account '{created_account.get('name')}' "
@@ -772,6 +961,7 @@ def import_pis(
     client: NemoClient,
     rows: list[SpreadsheetRow],
     users_by_email: dict[str, dict[str, Any]],
+    users_by_username: dict[str, dict[str, Any]],
     account_ids_by_project_number: dict[str, int],
     status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -783,13 +973,9 @@ def import_pis(
             account_ids_by_project_number, row.project_number
         )
         user_type = USER_TYPE_MAP[row.normalized_account_type]
-        existing_user = users_by_email.get(row.email)
+        existing_user = existing_user_for_row(row, users_by_email, users_by_username)
 
         if existing_user:
-            emit_status(
-                status_callback,
-                f"Updating PI access for {row.name} ({row.email})",
-            )
             print(
                 f"PI already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"
@@ -803,17 +989,23 @@ def import_pis(
                 existing_user,
                 patch_payload,
             )
-            users_by_email[row.email] = {**existing_user, **updated_user}
+            refreshed_user = {**existing_user, **updated_user}
+            if row.email:
+                users_by_email[row.email] = refreshed_user
+            if row.uni:
+                users_by_username[row.uni.lower()] = refreshed_user
             continue
+
+        if not row.email:
+            raise ValueError(
+                f"Row {row.row_number}: email is missing and no existing PI was found "
+                f"for UNI '{row.uni}'."
+            )
 
         payload = build_user_payload(
             row,
             user_type,
             managed_account_ids=[account_id],
-        )
-        emit_status(
-            status_callback,
-            f"Adding PI user {row.name} ({row.email})",
         )
         created_user = client.post("users/", payload)
         print(
@@ -821,6 +1013,8 @@ def import_pis(
             f"(id={created_user.get('id')})"
         )
         users_by_email[row.email] = created_user
+        if row.uni:
+            users_by_username[row.uni.lower()] = created_user
 
     return users_by_email
 
@@ -834,16 +1028,12 @@ def import_projects(
     status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     pi_rows = [row for row in rows if row.is_pi_row]
-    emit_status(status_callback, "Creating or validating projects")
+    emit_status(status_callback, f"Creating or validating {len(pi_rows)} project(s)")
 
     for row in pi_rows:
         project_key = row.project_number.lower()
         if project_key in projects_by_name:
             existing_project = projects_by_name[project_key]
-            emit_status(
-                status_callback,
-                f"Checking project {row.project_number}: already exists",
-            )
             print(
                 f"Project already exists: {existing_project.get('name')} "
                 f"(id={existing_project.get('id')})"
@@ -858,10 +1048,6 @@ def import_projects(
 
         account_id = account_id_for_project(
             account_ids_by_project_number, row.project_number
-        )
-        emit_status(
-            status_callback,
-            f"Creating project {row.project_number} for PI {row.name}",
         )
         payload = build_project_payload(row, account_id, pi_user["id"])
         created_project = client.post("projects/", payload)
@@ -883,7 +1069,10 @@ def update_pi_project_links(
     status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
     pi_rows = [row for row in rows if row.is_pi_row]
-    emit_status(status_callback, "Linking PI users to their projects and accounts")
+    emit_status(
+        status_callback,
+        f"Linking PI users to projects and accounts for {len(pi_rows)} project(s)",
+    )
 
     for row in pi_rows:
         user = users_by_email.get(row.email)
@@ -900,10 +1089,6 @@ def update_pi_project_links(
                     account_ids_by_project_number, row.project_number
                 )
             ],
-        )
-        emit_status(
-            status_callback,
-            f"Linking PI {row.name} ({row.email}) to project {row.project_number}",
         )
         updated_user = patch_if_changed(
             client,
@@ -925,6 +1110,7 @@ def import_other_users(
     client: NemoClient,
     rows: list[SpreadsheetRow],
     users_by_email: dict[str, dict[str, Any]],
+    users_by_username: dict[str, dict[str, Any]],
     projects_by_name: dict[str, dict[str, Any]],
     status_callback: StatusCallback | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -939,13 +1125,9 @@ def import_other_users(
             )
 
         user_type = USER_TYPE_MAP[row.normalized_account_type]
-        existing_user = users_by_email.get(row.email)
+        existing_user = existing_user_for_row(row, users_by_email, users_by_username)
 
         if existing_user:
-            emit_status(
-                status_callback,
-                f"Updating project access for user {row.name} ({row.email})",
-            )
             print(
                 f"User already exists: {row.email} "
                 f"(id={existing_user.get('id')}, username={existing_user.get('username')})"
@@ -960,17 +1142,23 @@ def import_other_users(
                 existing_user,
                 patch_payload,
             )
-            users_by_email[row.email] = {**existing_user, **updated_user}
+            refreshed_user = {**existing_user, **updated_user}
+            if row.email:
+                users_by_email[row.email] = refreshed_user
+            if row.uni:
+                users_by_username[row.uni.lower()] = refreshed_user
             continue
+
+        if not row.email:
+            raise ValueError(
+                f"Row {row.row_number}: email is missing and no existing user was found "
+                f"for UNI '{row.uni}'."
+            )
 
         payload = build_user_payload(
             row,
             user_type,
             project_ids=[project["id"]],
-        )
-        emit_status(
-            status_callback,
-            f"Adding user {row.name} ({row.email}) to project {row.project_number}",
         )
         created_user = client.post("users/", payload)
         print(
@@ -978,6 +1166,8 @@ def import_other_users(
             f"(id={created_user.get('id')})"
         )
         users_by_email[row.email] = created_user
+        if row.uni:
+            users_by_username[row.uni.lower()] = created_user
 
     return users_by_email
 
@@ -1001,6 +1191,7 @@ def run_import(
     token: str,
     dry_run: bool = False,
     *,
+    use_cache: bool = True,
     status_callback: StatusCallback | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
@@ -1025,12 +1216,38 @@ def run_import(
 
     print(f"Loaded file: {spreadsheet_path}")
     print(summarize(rows))
+    pi_count = sum(1 for row in rows if row.is_pi_row)
+    project_count = len({row.project_number.lower() for row in rows if row.project_number})
+    user_count = len({row.email for row in rows if row.email})
+    emit_status(
+        status_callback,
+        f"Loaded {len(rows)} row(s) covering {project_count} project(s), {user_count} user(s), and {pi_count} PI row(s)",
+    )
     advance("Spreadsheet loaded and validated")
 
     client = NemoClient(token, dry_run=dry_run)
     advance("Fetching current accounts, users, and projects from NEMO")
-    accounts_by_name, users_by_email, projects_by_name, existing_usernames = (
-        get_existing_maps(client, status_callback=status_callback)
+    (
+        accounts_by_name,
+        users_by_email,
+        users_by_username,
+        projects_by_name,
+        existing_usernames,
+    ) = (
+        get_existing_maps(
+            client,
+            use_cache=use_cache,
+            status_callback=status_callback,
+        )
+    )
+    emit_status(
+        status_callback,
+        "Filling missing spreadsheet fields from existing NEMO users where possible",
+    )
+    populate_missing_row_fields_from_existing_users(
+        rows,
+        users_by_email,
+        users_by_username,
     )
     emit_status(status_callback, "Generating missing UNIs where needed")
     fill_missing_unis(rows, existing_usernames)
@@ -1047,6 +1264,7 @@ def run_import(
         client,
         rows,
         users_by_email,
+        users_by_username,
         account_ids_by_project_number,
         status_callback=status_callback,
     )
@@ -1073,6 +1291,7 @@ def run_import(
         client,
         rows,
         users_by_email,
+        users_by_username,
         projects_by_name,
         status_callback=status_callback,
     )

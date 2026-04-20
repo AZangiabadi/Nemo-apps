@@ -421,6 +421,7 @@ PAGE_TEMPLATE = """
       max-height: 320px;
       overflow-y: auto;
       white-space: pre-wrap;
+      overflow-anchor: none;
     }
     .footer-note {
       margin-top: 18px;
@@ -1023,6 +1024,10 @@ def build_import_page(
           <label><input type="checkbox" name="dry_run" checked> Dry run only</label>
           <div class="help">Keep this checked if you want to preview changes before sending them to NEMO.</div>
         </div>
+        <div>
+          <label><input type="checkbox" name="bypass_cache"> Bypass cache and use live API data</label>
+          <div class="help">Check this to ignore recent cached NEMO accounts, users, projects, and invoice metadata.</div>
+        </div>
         <div class="actions">
           <button type="submit">Run Batch Import</button>
           <a class="button secondary" href="/">Back Home</a>
@@ -1179,6 +1184,10 @@ def build_invoice_page(
           <div class="help">{html.escape(pdf_note)}</div>
           <div class="help">If ZIP is unchecked, the finished page will show individual file download links instead.</div>
         </fieldset>
+        <div>
+          <label><input type="checkbox" name="bypass_cache"> Bypass cache and use live API data</label>
+          <div class="help">Check this to force fresh NEMO project and consumable metadata instead of recent cached API results.</div>
+        </div>
         <div class="actions">
           <button type="submit">Generate Invoices</button>
           <a class="button secondary" href="/">Back Home</a>
@@ -1296,6 +1305,7 @@ def build_invoice_job_page(job_id: str) -> str:
           }}
           renderTimer();
           logEl.textContent = data.log || "";
+          logEl.scrollTop = 0;
           barEl.style.width = `${{percent}}%`;
           statusEl.className = `status ${{data.status_class || "info"}}`;
           renderDownloads(data);
@@ -1918,6 +1928,7 @@ def app_page(slug: str) -> str:
 def run_user_batch_import() -> str:
     token = request.form.get("token", "").strip()
     dry_run = request.form.get("dry_run") == "on"
+    bypass_cache = request.form.get("bypass_cache") == "on"
     spreadsheet = request.files.get("spreadsheet")
 
     if not token:
@@ -1951,6 +1962,7 @@ def run_user_batch_import() -> str:
             "log": "Preparing batch import job...",
             "log_lines": ["Preparing batch import job..."],
             "mode": "Dry Run" if dry_run else "Live Import",
+            "cache_mode": "Live API" if bypass_cache else "Cached API",
             "started_at": iso_timestamp(),
         },
     )
@@ -1966,24 +1978,29 @@ def run_user_batch_import() -> str:
             update_job(job_id, current=done, total=total, summary=label)
 
         try:
+            append_job_log(
+                job_id,
+                f"Starting {'dry run' if dry_run else 'live import'} for {spreadsheet.filename}",
+            )
+            append_job_log(
+                job_id,
+                f"Using {'live API data' if bypass_cache else 'cached API data when available'}",
+            )
             with redirect_stdout(output), redirect_stderr(output):
                 print(
                     "Run started via web app.\n"
                     f"Uploaded file: {spreadsheet.filename}\n"
                     f"Mode: {'Dry Run' if dry_run else 'Live Import'}\n"
+                    f"API source: {'Live API' if bypass_cache else 'Cached API allowed'}\n"
                 )
                 run_import(
                     str(saved_path),
                     token,
                     dry_run=dry_run,
+                    use_cache=not bypass_cache,
                     status_callback=on_status,
                     progress_callback=on_progress,
                 )
-
-            combined_log = output.getvalue().strip()
-            for line in combined_log.splitlines():
-                if line.strip():
-                    append_job_log(job_id, line)
 
             update_job(
                 job_id,
@@ -1998,11 +2015,6 @@ def run_user_batch_import() -> str:
                 total=7,
             )
         except Exception as exc:
-            details = output.getvalue().strip()
-            if details:
-                for line in details.splitlines():
-                    if line.strip():
-                        append_job_log(job_id, line)
             error_text = str(exc)
             append_job_log(job_id, error_text)
             update_job(
@@ -2057,6 +2069,7 @@ def run_invoice_generator() -> str:
     generate_excel = request.form.get("generate_excel") == "on"
     generate_pdf = request.form.get("generate_pdf") == "on"
     make_zip = request.form.get("make_zip") == "on"
+    bypass_cache = request.form.get("bypass_cache") == "on"
 
     if not api_token:
         return build_invoice_page(error="API token is required.")
@@ -2100,6 +2113,7 @@ def run_invoice_generator() -> str:
             "started_at": iso_timestamp(created_at),
             "timer_started_at": None,
             "links_ready_at": None,
+            "cache_mode": "Live API" if bypass_cache else "Cached API",
         },
     )
 
@@ -2157,6 +2171,7 @@ def run_invoice_generator() -> str:
                     generate_excel=generate_excel,
                     generate_pdf=generate_pdf,
                     logo_path=logo_path,
+                    use_cache=not bypass_cache,
                     progress_callback=on_progress,
                     status_callback=on_status,
                 )
@@ -2329,7 +2344,7 @@ def invoice_job_status(job_id: str):
             "summary": job.get("summary", ""),
             "current": job.get("current", 0),
             "total": job.get("total", 0),
-            "log": "\n".join(job.get("log_lines", [])[-80:]),
+            "log": "\n".join(job.get("log_lines", [])),
             "status": status,
             "status_class": status_class,
             "finished": status in {"completed", "error"},

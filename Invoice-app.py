@@ -44,6 +44,10 @@ HTML_PAGE = """
         <input type="checkbox" name="generate_pdf" checked> Generate PDF
       </label>
 
+      <label>
+        <input type="checkbox" name="bypass_cache"> Bypass cache and use live API data
+      </label>
+
       <button type="submit">Generate ZIP</button>
     </form>
   </div>
@@ -64,6 +68,7 @@ async def generate(
     api_token: str = Form(...),
     nemo_base: str = Form(NEMO_BASE_URL),
     generate_pdf: str = Form("on"),  # checkbox sends "on" when checked
+    bypass_cache: str | None = Form(None),
 ):
     api_token = api_token.strip()
     if not api_token:
@@ -80,13 +85,14 @@ async def generate(
     os.makedirs(outdir, exist_ok=True)
 
     try:
-        _, pdf_created, df = generate_invoices(
+        _, pdf_created, df, _generated_paths = generate_invoices(
             csv_path=csv_path,
             outdir=outdir,
             nemo_base=(nemo_base or NEMO_BASE_URL).rstrip("/"),
             api_token=api_token,
             generate_pdf=(generate_pdf == "on"),
             logo_path=os.path.join(os.path.dirname(__file__), "columbia_logo.png"),
+            use_cache=(bypass_cache != "on"),
         )
 
         if generate_pdf == "on" and pdf_created == 0:

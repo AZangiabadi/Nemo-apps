@@ -3,13 +3,21 @@ import os
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Callable
+from typing import Protocol
 
 import requests
 from flask import Flask, render_template, request
 
 
-ImportFn = Callable[[str, str, bool], None]
+class ImportFn(Protocol):
+    def __call__(
+        self,
+        file_path: str,
+        token: str,
+        dry_run: bool = False,
+        *,
+        use_cache: bool = True,
+    ) -> None: ...
 
 
 def create_import_app(
@@ -34,6 +42,7 @@ def create_import_app(
         if request.method == "POST":
             token = request.form.get("token", "").strip()
             dry_run = request.form.get("dry_run") == "on"
+            bypass_cache = request.form.get("bypass_cache") == "on"
             spreadsheet = request.files.get("spreadsheet")
 
             if not token:
@@ -60,8 +69,14 @@ def create_import_app(
                             "Run started via web app.\n"
                             f"Uploaded file: {spreadsheet.filename}\n"
                             f"Mode: {'Dry Run' if dry_run else 'Live Import'}\n"
+                            f"API source: {'Live API' if bypass_cache else 'Cached API allowed'}\n"
                         )
-                        import_fn(str(temp_path), token, dry_run)
+                        import_fn(
+                            str(temp_path),
+                            token,
+                            dry_run,
+                            use_cache=not bypass_cache,
+                        )
 
                     status = "success"
                     result = output.getvalue().strip()

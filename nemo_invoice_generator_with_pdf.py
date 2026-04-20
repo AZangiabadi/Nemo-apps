@@ -376,6 +376,7 @@ def fetch_all_projects(
     nemo_base: str,
     api_token: str,
     *,
+    use_cache: bool = True,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, dict]:
     """
@@ -383,11 +384,12 @@ def fetch_all_projects(
     Works with DRF pagination ('results' + 'next') and with non-paginated lists.
     """
     _requests_required()
-    cached_projects = _load_cached_nemo_metadata("projects", nemo_base, api_token)
-    if cached_projects is not None:
-        if status_callback:
-            status_callback("Using cached NEMO project contacts")
-        return cached_projects
+    if use_cache:
+        cached_projects = _load_cached_nemo_metadata("projects", nemo_base, api_token)
+        if cached_projects is not None:
+            if status_callback:
+                status_callback("Using cached NEMO project contacts")
+            return cached_projects
 
     url = nemo_base.rstrip("/") + "/api/projects/"
     headers = {"Authorization": f"Token {api_token}"}
@@ -441,17 +443,21 @@ def fetch_all_consumables(
     nemo_base: str,
     api_token: str,
     *,
+    use_cache: bool = True,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, str]:
     """
     Fetch all consumables and return a dict {normalized_consumable_name: lab_name}.
     """
     _requests_required()
-    cached_consumables = _load_cached_nemo_metadata("consumables", nemo_base, api_token)
-    if cached_consumables is not None:
-        if status_callback:
-            status_callback("Using cached NEMO consumable metadata")
-        return {str(key): str(value) for key, value in cached_consumables.items()}
+    if use_cache:
+        cached_consumables = _load_cached_nemo_metadata(
+            "consumables", nemo_base, api_token
+        )
+        if cached_consumables is not None:
+            if status_callback:
+                status_callback("Using cached NEMO consumable metadata")
+            return {str(key): str(value) for key, value in cached_consumables.items()}
 
     url = nemo_base.rstrip("/") + "/api/consumables/"
     headers = {"Authorization": f"Token {api_token}"}
@@ -1512,6 +1518,7 @@ def generate_invoices(
     generate_excel: bool = True,
     generate_pdf: bool = True,
     logo_path: Optional[str] = None,
+    use_cache: bool = True,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, int, pd.DataFrame, List[str]]:
@@ -1542,6 +1549,7 @@ def generate_invoices(
         consumable_lab_map = fetch_all_consumables(
             nemo_base=nemo_base,
             api_token=api_token,
+            use_cache=use_cache,
             status_callback=status_callback,
         )
 
@@ -1561,6 +1569,7 @@ def generate_invoices(
         project_map = fetch_all_projects(
             nemo_base=nemo_base,
             api_token=api_token,
+            use_cache=use_cache,
             status_callback=status_callback,
         )
 
