@@ -233,6 +233,179 @@ LAB_NAME_MAP = {
 
 DESIRED_LAB_ORDER = ["Cleanroom", "SMCL", "Electron Microscopy Lab", "Consumable"]
 
+# Max billable hours per session, sourced from "Tool Rates.xlsx" Sheet2.
+TOOL_MAX_HOURS_BY_TOOL_ID = {
+    2: 3.0,
+    3: 3.0,
+    4: 3.0,
+    5: 3.0,
+    6: 3.0,
+    7: 3.0,
+    8: 8.0,
+    9: 10.0,
+    10: 4.0,
+    11: 4.0,
+    14: 4.0,
+    15: 8.0,
+    16: 6.0,
+    18: 8.0,
+    19: 8.0,
+    20: 2.0,
+    21: 4.0,
+    22: 3.0,
+    23: 9.0,
+    24: 9.0,
+    26: 4.0,
+    27: 4.0,
+    28: 4.0,
+    29: 6.0,
+    30: 6.0,
+    31: 4.0,
+    32: 6.0,
+    34: 4.0,
+    35: 4.0,
+    36: 4.0,
+    37: 4.0,
+    38: 4.0,
+    39: 4.0,
+    40: 3.0,
+    41: 3.0,
+    42: 3.0,
+    43: 2.0,
+    44: 4.0,
+    45: 6.0,
+    46: 6.0,
+    47: 2.0,
+    48: 3.0,
+    49: 8.0,
+    51: 5.0,
+    52: 8.0,
+    53: 9.0,
+    54: 5.0,
+    55: 10.0,
+    56: 10.0,
+    57: 8.0,
+    59: 9.0,
+    60: 10.0,
+    61: 12.0,
+    62: 10.0,
+    63: 10.0,
+    64: 10.0,
+    65: 10.0,
+    66: 12.0,
+    67: 8.0,
+    68: 8.0,
+    69: 4.0,
+    70: 4.0,
+    71: 4.0,
+    72: 4.0,
+    73: 4.0,
+    74: 4.0,
+    77: 12.0,
+    78: 12.0,
+}
+
+TOOL_MAX_HOURS_BY_NAME = {
+    "laurellspinner": 3.0,
+    "lithohood1spinner1": 3.0,
+    "lithohood1spinner2": 3.0,
+    "lithohood2": 3.0,
+    "lithohood3spinner3": 3.0,
+    "lithosolventtank": 3.0,
+    "heidelberg3micronlaserwriter": 8.0,
+    "heidelbergdw66laserwriter": 10.0,
+    "duvma6maskaligner": 4.0,
+    "ma6maskaligner": 4.0,
+    "yeshmdsoven": 4.0,
+    "feitalostem": 8.0,
+    "zeisssigmasem": 6.0,
+    "elionixboden50febl": 8.0,
+    "beamer": 8.0,
+    "edwardsthermalevaporator": 2.0,
+    "lightzeissmicroscope": 4.0,
+    "criticalpointdryer": 3.0,
+    "autofinder1": 9.0,
+    "autofinder2": 9.0,
+    "oxfordpecvd": 4.0,
+    "angstromevovacsystem": 4.0,
+    "angstromhighvacuumevaporator": 4.0,
+    "ajadielectricsputter": 6.0,
+    "ajametalsputter": 6.0,
+    "cambridgenanotechald": 4.0,
+    "parylenecoater": 6.0,
+    "solarisrta": 4.0,
+    "oxfordicprieclbasedcobraiiiv": 4.0,
+    "oxfordicpdriefbasedcobra300": 4.0,
+    "oxfordicpriedirectload": 4.0,
+    "dienerplasmaetch": 4.0,
+    "anatechplasmaasher": 4.0,
+    "rcastation": 3.0,
+    "generalacidshood": 3.0,
+    "generalbasehood": 3.0,
+    "uvozone": 2.0,
+    "tptwirebonder": 4.0,
+    "dicingsaw": 6.0,
+    "chemicalmechanicalpolishing": 6.0,
+    "klaprofilometer": 2.0,
+    "wykont9100opticalprofiler": 3.0,
+    "novananosem": 8.0,
+    "nanomagneticsezafm": 5.0,
+    "parkafm": 8.0,
+    "bet": 9.0,
+    "agilentecosecgpc": 5.0,
+    "agilent8453uvvisspectrophotometer": 10.0,
+    "agilentsupernovascxrd": 10.0,
+    "brukerdimensionfastscanafm": 8.0,
+    "horibamicroraman": 9.0,
+    "malvernzetasizernanozs": 10.0,
+    "panalyticalxpert3powderxrd": 12.0,
+    "phixps": 10.0,
+    "renishawinviamicroraman": 10.0,
+    "smartlabxrd": 10.0,
+    "synergysscxrd": 10.0,
+    "tainstrumentsq500tga": 12.0,
+    "woollamvariableangleellipsometer": 8.0,
+    "woollamalphaseellipsometer": 8.0,
+    "pipsii": 4.0,
+    "dimplegrinder": 4.0,
+    "diamondsaw": 4.0,
+    "plasmacleaner": 4.0,
+    "grinderpolisher": 4.0,
+    "microtome": 4.0,
+    "tembiosamples": 12.0,
+    "temfibsamplesprep": 12.0,
+}
+
+TOOL_MAX_HOURS_ALIASES = {
+    "laurellspinner1": "laurellspinner",
+    "heidelberg3umlaserwriter": "heidelberg3micronlaserwriter",
+    "heidelbergdwl66laserwriter": "heidelbergdw66laserwriter",
+    "sussma6duvmaskaligner": "duvma6maskaligner",
+    "sussma6maskaligner": "ma6maskaligner",
+    "feitalosf200xstem": "feitalostem",
+    "zeisssem": "zeisssigmasem",
+    "edwardsthermalevaporator1": "edwardsthermalevaporator",
+    "angstromhighvacuum": "angstromhighvacuumevaporator",
+    "angstrommetalsdepositionsystem": "angstromevovacsystem",
+    "ajaorion8dielectricssputteringsystem": "ajadielectricsputter",
+    "ajaorion3metalsputteringsystem": "ajametalsputter",
+    "uvocsuvozonecleaner": "uvozone",
+    "tptwirebonderhb10": "tptwirebonder",
+    "cmp": "chemicalmechanicalpolishing",
+    "klap17profiler": "klaprofilometer",
+    "balteccpd": "criticalpointdryer",
+    "micrometricsasap2020hvbetanalyzer": "bet",
+    "tosohecosecriuvgpc": "agilentecosecgpc",
+    "agilent1260infinitygpc": "agilentecosecgpc",
+    "brukerdimensionsfastscanafm": "brukerdimensionfastscanafm",
+    "horibaxploramicroraman": "horibamicroraman",
+    "phi5500xps": "phixps",
+    "rigakusmartlabxrd": "smartlabxrd",
+    "rigakuxtalabsynergysscxrd": "synergysscxrd",
+    "tembiosamples": "tembiosamples",
+    "fibsamplepreparation": "temfibsamplesprep",
+}
+
 
 # -----------------------------
 # Parsing helpers
@@ -257,6 +430,67 @@ def normalize_item(item: object) -> str:
     s = str(item).strip()
     s = re.sub(r"\s*\((Individual|Group)\)\s*$", "", s)
     return s
+
+
+def normalize_tool_lookup_key(value: object) -> str:
+    text = normalize_item(value).lower()
+    text = text.replace("&", "and")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def parse_tool_id(value: object) -> Optional[int]:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_max_billable_hours(row: pd.Series) -> Optional[float]:
+    for column in ("Tool ID", "Tool Id", "ToolID", "Tool"):
+        if column in row.index:
+            tool_id = parse_tool_id(row[column])
+            if tool_id is not None and tool_id in TOOL_MAX_HOURS_BY_TOOL_ID:
+                return TOOL_MAX_HOURS_BY_TOOL_ID[tool_id]
+
+    tool_key = normalize_tool_lookup_key(row.get("Item"))
+    tool_key = TOOL_MAX_HOURS_ALIASES.get(tool_key, tool_key)
+    return TOOL_MAX_HOURS_BY_NAME.get(tool_key)
+
+
+def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    df["Max Billable Hours"] = df.apply(resolve_max_billable_hours, axis=1)
+    quantity_hours = df["Quantity"] / 60.0
+    capped_mask = (
+        ~df["IsConsumable"]
+        & df["Max Billable Hours"].notna()
+        & df["Quantity"].notna()
+        & (quantity_hours > df["Max Billable Hours"])
+    )
+    if not capped_mask.any():
+        return df
+
+    original_cost = df.loc[capped_mask, "Cost"].copy()
+    original_quantity = df.loc[capped_mask, "Quantity"].copy()
+    capped_quantity = df.loc[capped_mask, "Max Billable Hours"].astype(float) * 60.0
+
+    df.loc[capped_mask, "Original Quantity"] = original_quantity
+    df.loc[capped_mask, "Original Cost"] = original_cost
+    df.loc[capped_mask, "Quantity"] = capped_quantity
+
+    scaled_cost = original_cost.copy()
+    positive_quantity_mask = original_quantity > 0
+    scaled_cost.loc[positive_quantity_mask] = (
+        original_cost.loc[positive_quantity_mask]
+        * capped_quantity.loc[positive_quantity_mask]
+        / original_quantity.loc[positive_quantity_mask]
+    )
+    df.loc[capped_mask, "Cost"] = scaled_cost.round(2)
+    return df
 
 
 def parse_minimum_charge_from_rate(rate: object) -> Optional[float]:
@@ -1489,6 +1723,8 @@ def load_and_prepare(
     df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
 
     df["Cost"] = pd.to_numeric(df["Cost"], errors="coerce").fillna(0.0)
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
+    df = apply_max_session_charge_caps(df)
     df["Subsidy"] = 0.0
     cdg_mask = df["Application identifier"].str.upper().eq("CDG")
     if cdg_mask.any():
@@ -1503,7 +1739,6 @@ def load_and_prepare(
         if minimum_charge_mask.any():
             df.loc[df.loc[cdg_mask].index[minimum_charge_mask], "Subsidy"] = 0.0
         # Do not adjust `Cost`; keep the value as in the CSV.
-    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
 
     df["Period"] = df["Start_dt"].apply(period_from_start_dt)
 
