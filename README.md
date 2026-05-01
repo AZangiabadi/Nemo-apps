@@ -5,6 +5,9 @@ Internal Columbia Nano Initiative web app for launching NEMO-related tools from 
 Current apps:
 - `User/Account/Project Batch Import From Excel`
 - `NEMO Invoice Generator`
+- `Excel Invoice to PDF`
+- `Missed Reservation Report`
+- `Account/Project Replacement`
 - `Jumbotron`
 
 ## Project Structure
@@ -139,7 +142,27 @@ docker compose down
 - generate invoice ZIP files
 - optional PDF generation when `reportlab` is installed
 
-### 3. Jumbotron
+### 3. Excel Invoice to PDF
+
+- upload an edited NEMO invoice workbook
+- generate a matching PDF invoice
+- uses the PI email stored in the Excel invoice header
+
+### 4. Missed Reservation Report
+
+- upload a NEMO usage CSV
+- list users with 5 or more missed reservation rows
+- include usernames when present in the CSV
+
+### 5. Account/Project Replacement
+
+- enter a NEMO API token plus old and new account/project numbers
+- clone the old account and project metadata to the new records
+- set today's date as the new `start_date`
+- deactivate the old account and project after creating the new records
+- dry-run mode is enabled by default
+
+### 6. Jumbotron
 
 - reads its NEMO API token from the `NEMO_JUMBOTRON_API_TOKEN` environment variable
 - local development can load that token from a project `.env` file

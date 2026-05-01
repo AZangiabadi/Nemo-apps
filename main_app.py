@@ -113,6 +113,13 @@ APP_DEFINITIONS: list[AppDefinition] = [
         details="Counts missed-reservation charge rows by user for quick follow-up.",
     ),
     AppDefinition(
+        slug="account-project-replacement",
+        title="Account/Project Replacement",
+        summary="Clone an old account/project to a new number, then deactivate the old records.",
+        accent="#6d28d9",
+        details="Uses the NEMO API and runs in dry-run mode by default.",
+    ),
+    AppDefinition(
         slug="jumbotron",
         title="Jumbotron",
         summary="Show live tool usage, upcoming reservations for today and tomorrow, and today's cancellations.",
@@ -994,6 +1001,209 @@ def build_missed_reservation_page(
     return render_page("Missed Reservation Report", body)
 
 
+ACCOUNT_CLONE_FIELDS = ("note", "type")
+PROJECT_CLONE_FIELDS = (
+    "principal_investigators",
+    "users",
+    "application_identifier",
+    "allow_consumable_withdrawals",
+    "allow_staff_charges",
+    "discipline",
+    "project_types",
+    "only_allow_tools",
+    "project_name",
+    "contact_name",
+    "contact_phone",
+    "contact_email",
+    "expires_on",
+    "addressee",
+    "comments",
+    "no_charge",
+    "no_tax",
+    "no_cap",
+    "category",
+    "institution",
+    "department",
+    "staff_host",
+)
+
+
+def _find_nemo_record(records: list[dict], value: str, label: str) -> dict:
+    lookup = value.strip()
+    if not lookup:
+        raise ValueError(f"Enter the {label}.")
+
+    if lookup.isdigit():
+        record_id = int(lookup)
+        id_matches = [record for record in records if record.get("id") == record_id]
+        if len(id_matches) == 1:
+            return id_matches[0]
+
+    name_matches = [
+        record
+        for record in records
+        if str(record.get("name", "")).strip() == lookup
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    if len(name_matches) > 1:
+        raise ValueError(f"Multiple {label} records matched {lookup!r}; use the API id instead.")
+    raise ValueError(f"No {label} record found for {lookup!r}.")
+
+
+def _find_account_for_project(accounts: list[dict], project: dict) -> dict:
+    project_name = str(project.get("name", "")).strip()
+    name_matches = [
+        account
+        for account in accounts
+        if str(account.get("name", "")).strip() == project_name
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    if len(name_matches) > 1:
+        raise ValueError(
+            f"Multiple account records matched project name {project_name!r}; "
+            "clean up the duplicate account names before replacement."
+        )
+
+    linked_account_id = project.get("account")
+    if linked_account_id is not None:
+        id_matches = [
+            account for account in accounts if account.get("id") == linked_account_id
+        ]
+        if len(id_matches) == 1:
+            return id_matches[0]
+
+    raise ValueError(
+        f"No account found with the same name as project {project_name!r}."
+    )
+
+
+def _record_name_exists(records: list[dict], name: str) -> bool:
+    return any(str(record.get("name", "")).strip() == name.strip() for record in records)
+
+
+def clone_account_project(
+    *,
+    token: str,
+    old_number: str,
+    new_number: str,
+    dry_run: bool,
+) -> list[str]:
+    client = NemoClient(token=token, base_url=NEMO_API_BASE_URL, dry_run=dry_run)
+    today = datetime.now(JUMBOTRON_TIMEZONE).date().isoformat()
+    old_number = old_number.strip()
+    new_number = new_number.strip()
+    if not token.strip():
+        raise ValueError("NEMO API token is required.")
+    if not old_number:
+        raise ValueError("Old account/project number is required.")
+    if not new_number:
+        raise ValueError("New account/project number is required.")
+    if old_number == new_number:
+        raise ValueError("The old and new account/project numbers must be different.")
+
+    accounts = client.fetch_all("accounts/")
+    projects = client.fetch_all("projects/")
+    old_project = _find_nemo_record(projects, old_number, "old project")
+    old_account = _find_account_for_project(accounts, old_project)
+
+    if _record_name_exists(accounts, new_number):
+        raise ValueError(f"An account named {new_number!r} already exists.")
+    if _record_name_exists(projects, new_number):
+        raise ValueError(f"A project named {new_number!r} already exists.")
+
+    account_payload = {
+        field: old_account.get(field)
+        for field in ACCOUNT_CLONE_FIELDS
+        if field in old_account
+    }
+    account_payload.update(
+        {
+            "name": new_number,
+            "start_date": today,
+            "active": True,
+        }
+    )
+    new_account = client.post("accounts/", account_payload)
+    new_account_id = int(new_account["id"])
+
+    project_payload = {
+        field: old_project.get(field)
+        for field in PROJECT_CLONE_FIELDS
+        if field in old_project
+    }
+    project_payload.update(
+        {
+            "name": new_number,
+            "start_date": today,
+            "active": True,
+            "account": new_account_id,
+        }
+    )
+    new_project = client.post("projects/", project_payload)
+
+    client.patch(f"projects/{old_project['id']}/", {"active": False})
+    client.patch(f"accounts/{old_account['id']}/", {"active": False})
+
+    mode = "DRY RUN" if dry_run else "LIVE RUN"
+    return [
+        f"{mode} completed.",
+        f"Old account: {old_account.get('name')} (id {old_account.get('id')})",
+        f"Old project: {old_project.get('name')} (id {old_project.get('id')})",
+        f"New account: {new_account.get('name')} (id {new_account.get('id')})",
+        f"New project: {new_project.get('name')} (id {new_project.get('id')})",
+        f"New start_date: {today}",
+        "Old project active=false",
+        "Old account active=false",
+    ]
+
+
+def build_account_project_replacement_page(
+    *,
+    error: str | None = None,
+    result: str | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        message = f'<div class="status success"><strong>Completed</strong><pre>{html.escape(result)}</pre></div>'
+
+    body = f"""
+    <section class="panel accented" style="--accent:#6d28d9;">
+      <h2>Account/Project Replacement</h2>
+      <p>Clone an existing NEMO account and project to a new account/project number, then deactivate the old account and project.</p>
+      <form action="/apps/account-project-replacement/run" method="post">
+        <div>
+          <label for="token">NEMO API Token</label>
+          <input id="token" type="password" name="token" placeholder="Enter API token" required>
+        </div>
+        <div>
+          <label for="old_number">Exact Account Name or Project ID</label>
+          <input id="old_number" type="text" name="old_number" placeholder="Exact account name or project ID" required>
+          <div class="help">Enter the old account name or the old project API id. The app finds the matching old account by the project name.</div>
+        </div>
+        <div>
+          <label for="new_number">New Account/Project Number</label>
+          <input id="new_number" type="text" name="new_number" placeholder="Exact new account/project name" required>
+          <div class="help">The new account and project inherit old metadata, use this value as their name, and get today as start_date.</div>
+        </div>
+        <div>
+          <label><input type="checkbox" name="dry_run" checked> Dry run only</label>
+          <div class="help">Keep dry run checked first. Uncheck only when the preview looks right.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Replace Account/Project</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("Account/Project Replacement", body)
+
+
 def build_invoice_job_page(job_id: str) -> str:
     body = f"""
     <section class="panel accented" style="--accent:#9a3412;">
@@ -1512,6 +1722,8 @@ def app_page(slug: str) -> str:
         return build_excel_invoice_pdf_page()
     if slug == "missed-reservation-report":
         return build_missed_reservation_page()
+    if slug == "account-project-replacement":
+        return build_account_project_replacement_page()
     if slug == "jumbotron":
         try:
             report = get_jumbotron_report(get_jumbotron_token())
@@ -1991,6 +2203,27 @@ def run_missed_reservation_report() -> str:
         return build_missed_reservation_page(error=str(exc))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/apps/account-project-replacement/run")
+def run_account_project_replacement() -> str:
+    token = request.form.get("token", "").strip()
+    old_number = request.form.get("old_number", "").strip()
+    new_number = request.form.get("new_number", "").strip()
+    dry_run = request.form.get("dry_run") == "on"
+
+    try:
+        result_lines = clone_account_project(
+            token=token,
+            old_number=old_number,
+            new_number=new_number,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        return build_account_project_replacement_page(error=error_text)
+
+    return build_account_project_replacement_page(result="\n".join(result_lines))
 
 
 @app.get("/apps/jumbotron/data")
