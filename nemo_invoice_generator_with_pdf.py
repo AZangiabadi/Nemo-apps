@@ -881,6 +881,8 @@ def create_invoice_workbook(
     pi_email: str = "",
 ) -> Workbook:
     wb = Workbook()
+    wb.calculation.fullCalcOnLoad = True
+    wb.calculation.forceFullCalc = True
     ws = wb.active
     ws.title = "Invoice"
 
@@ -930,10 +932,12 @@ def create_invoice_workbook(
         ws.cell(summary_start, c).border = _BORDER_THIN
 
     lab_tot = df_group.groupby("Lab")["Cost"].sum().sort_index()
+    summary_lab_rows: Dict[str, int] = {}
 
     r = summary_start + 1
     for lab, cost in lab_tot.items():
         ws.cell(r, 1, value=lab).border = _BORDER_THIN
+        summary_lab_rows[str(lab)] = r
         ccell = ws.cell(r, 2, value=float(cost))
         ccell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
         ccell.border = _BORDER_THIN
@@ -941,6 +945,7 @@ def create_invoice_workbook(
 
     # Add access fee as a separate line item (once per invoice)
     ws.cell(r, 1, value="Access fee").border = _BORDER_THIN
+    summary_access_fee_row = r
     fee_cell = ws.cell(r, 2, value=internal_fee)
     fee_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
     fee_cell.border = _BORDER_THIN
@@ -948,6 +953,7 @@ def create_invoice_workbook(
 
     ws.cell(r, 1, value="TOTAL").font = _BOLD
     ws.cell(r, 1).border = _BORDER_THIN
+    summary_total_row = r
     total_cell = ws.cell(r, 2, value=float(lab_tot.sum() + internal_fee))
     total_cell.font = _BOLD
     total_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
@@ -955,6 +961,8 @@ def create_invoice_workbook(
 
     # Details by lab
     current_row = r + 2
+    lab_subtotal_cells: Dict[str, str] = {}
+    detail_sections: List[dict[str, object]] = []
 
     for lab in DESIRED_LAB_ORDER:
         df_lab = df_group[df_group["Lab"] == lab].copy()
@@ -993,20 +1001,58 @@ def create_invoice_workbook(
         currency_cols = ["Cost"]
         if show_subsidy:
             currency_cols.insert(0, "Subsidy")
+        detail_header_row = current_row
+        detail_data_start_row = detail_header_row + 1
+        detail_data_end_row = detail_header_row + len(out)
         current_row = write_table(
             ws, current_row, 1, out, currency_cols=currency_cols
+        )
+        cost_col_letter = get_column_letter(detail_end_col)
+        project_col_letter = get_column_letter(5)
+        detail_sections.append(
+            {
+                "lab": lab,
+                "project_range": (
+                    f"${project_col_letter}${detail_data_start_row}:"
+                    f"${project_col_letter}${detail_data_end_row}"
+                ),
+                "cost_range": (
+                    f"${cost_col_letter}${detail_data_start_row}:"
+                    f"${cost_col_letter}${detail_data_end_row}"
+                ),
+            }
         )
 
         subtotal_label_col = detail_end_col - 1
         ws.cell(current_row, subtotal_label_col, value="Subtotal").font = _BOLD
-        sub = ws.cell(current_row, detail_end_col, value=float(df_lab["Cost"].sum()))
+        sub = ws.cell(
+            current_row,
+            detail_end_col,
+            value=f"=SUM({cost_col_letter}{detail_data_start_row}:{cost_col_letter}{detail_data_end_row})",
+        )
         sub.font = _BOLD
         sub.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+        lab_subtotal_cells[lab] = sub.coordinate
         current_row += 2
+
+    for lab, summary_row in summary_lab_rows.items():
+        subtotal_cell = lab_subtotal_cells.get(lab)
+        if subtotal_cell:
+            ws.cell(summary_row, 2, value=f"={subtotal_cell}")
+
+    top_lab_cells = [
+        f"B{summary_row}"
+        for lab, summary_row in summary_lab_rows.items()
+        if lab in lab_subtotal_cells
+    ]
+    ws.cell(summary_total_row, 2, value=f"=SUM({','.join(top_lab_cells + [f'B{summary_access_fee_row}'])})")
 
     # Access fee + project fees summary (once per invoice)
     if not df_group.empty:
         access_fee_project = select_access_fee_project(df_group)
+        access_fee_detail_cell = ""
+        access_fee_project_ref = ""
+        access_fee_project_type_ref = ""
         if access_fee_project is not None:
             title = ws.cell(current_row, 1, value="Access fee")
             title.font = Font(bold=True, size=12)
@@ -1032,6 +1078,10 @@ def create_invoice_workbook(
                 access_fee_df,
                 currency_cols=["Access Fee"],
             )
+            access_fee_detail_cell = f"C{current_row - 1}"
+            access_fee_project_ref = f"$A${current_row - 1}"
+            access_fee_project_type_ref = f"$B${current_row - 1}"
+            ws.cell(summary_access_fee_row, 2, value=f"={access_fee_detail_cell}")
             ws.row_dimensions[current_row].height = 12
             current_row += 1
 
@@ -1094,6 +1144,8 @@ def create_invoice_workbook(
             ["Project Total", "Project"], ascending=[False, True]
         )
 
+        project_summary_header_row = current_row
+        project_summary_first_row = project_summary_header_row + 1
         current_row = write_table(
             ws,
             current_row,
@@ -1101,9 +1153,49 @@ def create_invoice_workbook(
             proj,
             currency_cols=list(DESIRED_LAB_ORDER) + ["Access Fee", "Project Total"],
         )
+        project_summary_last_row = current_row - 1
 
         last_col = len(proj_cols)
-        usage_total = float(df_group["Cost"].sum())
+        lab_col_by_name = {
+            lab: proj_cols.index(lab) + 1 for lab in DESIRED_LAB_ORDER
+        }
+        access_fee_col = proj_cols.index("Access Fee") + 1
+        project_total_col = proj_cols.index("Project Total") + 1
+
+        for row_idx in range(project_summary_first_row, project_summary_last_row + 1):
+            project_cell = f"$A{row_idx}"
+            for lab in DESIRED_LAB_ORDER:
+                terms = [
+                    (
+                        f'SUMIFS({section["cost_range"]},'
+                        f'{section["project_range"]},{project_cell})'
+                    )
+                    for section in detail_sections
+                    if section["lab"] == lab
+                ]
+                formula = "=" + "+".join(terms) if terms else "=0"
+                ws.cell(row_idx, lab_col_by_name[lab], value=formula)
+
+            access_fee_cell = ws.cell(row_idx, access_fee_col)
+            if access_fee_detail_cell:
+                access_fee_cell.value = (
+                    f"=IF(AND($A{row_idx}={access_fee_project_ref},"
+                    f"$B{row_idx}={access_fee_project_type_ref}),"
+                    f"{access_fee_detail_cell},0)"
+                )
+            else:
+                access_fee_cell.value = "=0"
+            access_fee_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+
+            first_lab_col = get_column_letter(lab_col_by_name[DESIRED_LAB_ORDER[0]])
+            last_lab_col = get_column_letter(lab_col_by_name[DESIRED_LAB_ORDER[-1]])
+            access_fee_col_letter = get_column_letter(access_fee_col)
+            project_total_cell = ws.cell(row_idx, project_total_col)
+            project_total_cell.value = (
+                f"=SUM({first_lab_col}{row_idx}:{last_lab_col}{row_idx},"
+                f"{access_fee_col_letter}{row_idx})"
+            )
+            project_total_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
 
         ws.cell(current_row, 1, value="Usage charges total").font = _BOLD
         ws.merge_cells(
@@ -1112,9 +1204,19 @@ def create_invoice_workbook(
             end_row=current_row,
             end_column=last_col - 1,
         )
-        tot_cell = ws.cell(current_row, last_col, value=usage_total)
+        first_lab_col = get_column_letter(lab_col_by_name[DESIRED_LAB_ORDER[0]])
+        last_lab_col = get_column_letter(lab_col_by_name[DESIRED_LAB_ORDER[-1]])
+        tot_cell = ws.cell(
+            current_row,
+            last_col,
+            value=(
+                f"=SUM({first_lab_col}{project_summary_first_row}:"
+                f"{last_lab_col}{project_summary_last_row})"
+            ),
+        )
         tot_cell.font = _BOLD
         tot_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+        usage_total_cell = tot_cell.coordinate
         current_row += 1
 
         ws.cell(current_row, 1, value="Access fee").border = _BORDER_THIN
@@ -1124,8 +1226,17 @@ def create_invoice_workbook(
             end_row=current_row,
             end_column=last_col - 1,
         )
-        fee_cell2 = ws.cell(current_row, last_col, value=internal_fee)
+        access_fee_col_letter = get_column_letter(access_fee_col)
+        fee_cell2 = ws.cell(
+            current_row,
+            last_col,
+            value=(
+                f"=SUM({access_fee_col_letter}{project_summary_first_row}:"
+                f"{access_fee_col_letter}{project_summary_last_row})"
+            ),
+        )
         fee_cell2.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
+        bottom_access_fee_cell = fee_cell2.coordinate
         current_row += 1
 
         ws.cell(current_row, 1, value="Invoice total").font = _BOLD
@@ -1135,7 +1246,11 @@ def create_invoice_workbook(
             end_row=current_row,
             end_column=last_col - 1,
         )
-        inv_cell = ws.cell(current_row, last_col, value=usage_total + internal_fee)
+        inv_cell = ws.cell(
+            current_row,
+            last_col,
+            value=f"=SUM({usage_total_cell},{bottom_access_fee_cell})",
+        )
         inv_cell.font = _BOLD
         inv_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
         current_row += 1

@@ -116,6 +116,21 @@ def _read_project_types(ws) -> dict[str, str]:
 
 def _read_access_fee(ws) -> float:
     for row in range(1, ws.max_row + 1):
+        if _cell_text(ws.cell(row, 1).value).lower() != "access fee":
+            continue
+
+        header_row = row + 1
+        headers = {
+            _cell_text(ws.cell(header_row, col).value): col
+            for col in range(1, ws.max_column + 1)
+        }
+        access_fee_col = headers.get("Access Fee")
+        if access_fee_col:
+            value = ws.cell(header_row + 1, access_fee_col).value
+            if value not in (None, ""):
+                return _money_value(value)
+
+    for row in range(1, ws.max_row + 1):
         if _cell_text(ws.cell(row, 1).value).lower() == "access fee":
             value = ws.cell(row, 2).value
             if value not in (None, ""):
