@@ -893,19 +893,92 @@ def missed_reservation_mask(df: pd.DataFrame) -> pd.Series:
     return mask
 
 
-def build_missed_reservation_report(csv_path: Path, *, threshold: int = 5) -> pd.DataFrame:
+def missed_reservation_tool_column(df: pd.DataFrame) -> Optional[str]:
+    for column in ("Tool", "Item", "Description", "Name"):
+        if column in df.columns:
+            return column
+    return None
+
+
+def format_top_missed_tools(
+    missed: pd.DataFrame,
+    group_columns: list[str],
+) -> pd.DataFrame:
+    tool_column = missed_reservation_tool_column(missed)
+    if not tool_column:
+        return pd.DataFrame(columns=group_columns + ["Top Missed Tools"])
+
+    tool_counts_source = missed.copy()
+    tool_counts_source["Missed Tool"] = (
+        tool_counts_source[tool_column].fillna("").astype(str).str.strip()
+    )
+    tool_counts_source = tool_counts_source[tool_counts_source["Missed Tool"] != ""]
+    if tool_counts_source.empty:
+        return pd.DataFrame(columns=group_columns + ["Top Missed Tools"])
+
+    tool_counts = (
+        tool_counts_source.groupby(group_columns + ["Missed Tool"], dropna=False)
+        .size()
+        .reset_index(name="Tool Misses")
+        .sort_values(
+            group_columns + ["Tool Misses", "Missed Tool"],
+            ascending=[True] * len(group_columns) + [False, True],
+        )
+    )
+
+    rows: list[dict[str, object]] = []
+    for group_key, group in tool_counts.groupby(group_columns, dropna=False, sort=False):
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        row = dict(zip(group_columns, group_key))
+        row["Top Missed Tools"] = ", ".join(
+            f"{record['Missed Tool']} ({int(record['Tool Misses'])})"
+            for record in group.head(3).to_dict("records")
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def top_missed_tools_report(missed: pd.DataFrame, *, limit: int = 10) -> pd.DataFrame:
+    tool_column = missed_reservation_tool_column(missed)
+    if not tool_column:
+        return pd.DataFrame(columns=["Tool", "Missed Reservations"])
+
+    tool_rows = missed.copy()
+    tool_rows["Tool"] = tool_rows[tool_column].fillna("").astype(str).str.strip()
+    tool_rows = tool_rows[tool_rows["Tool"] != ""]
+    if tool_rows.empty:
+        return pd.DataFrame(columns=["Tool", "Missed Reservations"])
+
+    return (
+        tool_rows.groupby("Tool", dropna=False)
+        .size()
+        .reset_index(name="Missed Reservations")
+        .sort_values(["Missed Reservations", "Tool"], ascending=[False, True])
+        .head(limit)
+        .reset_index(drop=True)
+    )
+
+
+def build_missed_reservation_reports(
+    csv_path: Path, *, threshold: int = 5
+) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     df = pd.read_csv(csv_path)
     if "User" not in df.columns:
         raise ValueError("CSV must include a User column.")
 
     missed = df[missed_reservation_mask(df)].copy()
+    empty_user_report = pd.DataFrame(
+        columns=["User", "Username", "Missed Reservations", "Top Missed Tools"]
+    )
+    empty_tool_report = pd.DataFrame(columns=["Tool", "Missed Reservations"])
     if missed.empty:
-        return pd.DataFrame(columns=["User", "Username", "Missed Reservations"])
+        return empty_user_report, empty_tool_report, 0
 
     missed["User"] = missed["User"].fillna("").astype(str).str.strip()
     missed = missed[missed["User"] != ""]
     if missed.empty:
-        return pd.DataFrame(columns=["User", "Username", "Missed Reservations"])
+        return empty_user_report, empty_tool_report, 0
 
     group_columns = ["User"]
     has_username = "Username" in missed.columns
@@ -919,16 +992,33 @@ def build_missed_reservation_report(csv_path: Path, *, threshold: int = 5) -> pd
         .reset_index(name="Missed Reservations")
         .sort_values(["Missed Reservations", "User"], ascending=[False, True])
     )
+    top_tools = format_top_missed_tools(missed, group_columns)
+    if not top_tools.empty:
+        report = report.merge(top_tools, on=group_columns, how="left")
+    else:
+        report["Top Missed Tools"] = ""
+    report["Top Missed Tools"] = report["Top Missed Tools"].fillna("")
     report = report[report["Missed Reservations"] >= threshold]
     if not has_username:
         report.insert(1, "Username", "")
-    return report.loc[:, ["User", "Username", "Missed Reservations"]].reset_index(drop=True)
+    user_report = report.loc[
+        :, ["User", "Username", "Missed Reservations", "Top Missed Tools"]
+    ].reset_index(drop=True)
+    return user_report, top_missed_tools_report(missed), len(report)
+
+
+def build_missed_reservation_report(csv_path: Path, *, threshold: int = 5) -> pd.DataFrame:
+    user_report, _tool_report, _total_missed_users = build_missed_reservation_reports(
+        csv_path, threshold=threshold
+    )
+    return user_report
 
 
 def build_missed_reservation_page(
     *,
     error: str | None = None,
     report: pd.DataFrame | None = None,
+    tool_report: pd.DataFrame | None = None,
     total_missed_users: int | None = None,
 ) -> str:
     message = ""
@@ -951,6 +1041,7 @@ def build_missed_reservation_page(
                   <td>{html.escape(str(row["User"]))}</td>
                   <td>{html.escape(str(row["Username"]))}</td>
                   <td>{int(row["Missed Reservations"])}</td>
+                  <td>{html.escape(str(row["Top Missed Tools"]))}</td>
                 </tr>
                 """
                 for row in report.to_dict("records")
@@ -972,12 +1063,39 @@ def build_missed_reservation_page(
                     <th>User</th>
                     <th>Username</th>
                     <th>Missed Reservations</th>
+                    <th>Top Missed Tools</th>
                   </tr>
                 </thead>
                 <tbody>{rows}</tbody>
               </table>
             </div>
             """
+
+    tool_report_html = ""
+    if tool_report is not None and not tool_report.empty:
+        tool_rows = "\n".join(
+            f"""
+            <tr>
+              <td>{html.escape(str(row["Tool"]))}</td>
+              <td>{int(row["Missed Reservations"])}</td>
+            </tr>
+            """
+            for row in tool_report.to_dict("records")
+        )
+        tool_report_html = f"""
+        <h2>Top Missed Tools</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tool</th>
+                <th>Missed Reservations</th>
+              </tr>
+            </thead>
+            <tbody>{tool_rows}</tbody>
+          </table>
+        </div>
+        """
 
     body = f"""
     <section class="panel accented" style="--accent:#be123c;">
@@ -996,6 +1114,7 @@ def build_missed_reservation_page(
       </form>
       {message}
       {report_html}
+      {tool_report_html}
     </section>
     """
     return render_page("Missed Reservation Report", body)
@@ -2193,11 +2312,13 @@ def run_missed_reservation_report() -> str:
             allowed_suffixes=ALLOWED_MISSED_RESERVATION_SUFFIXES,
             folder=workdir,
         )
-        all_counts = build_missed_reservation_report(csv_path, threshold=0)
-        report = all_counts[all_counts["Missed Reservations"] >= 5].reset_index(drop=True)
+        report, tool_report, total_missed_users = build_missed_reservation_reports(
+            csv_path, threshold=5
+        )
         return build_missed_reservation_page(
             report=report,
-            total_missed_users=len(all_counts),
+            tool_report=tool_report,
+            total_missed_users=total_missed_users,
         )
     except Exception as exc:
         return build_missed_reservation_page(error=str(exc))

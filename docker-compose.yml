@@ -15,6 +15,7 @@ services:
       NEMO_JUMBOTRON_SCROLL_INTERVAL_MS: ${NEMO_JUMBOTRON_SCROLL_INTERVAL_MS:-50}
     volumes:
       - ./generated_invoices:/app/generated_invoices
+      - ./Account-project-user-adding-Nemo.xlsx:/app/Account-project-user-adding-Nemo.xlsx:ro
     restart: unless-stopped
 
   caddy:
