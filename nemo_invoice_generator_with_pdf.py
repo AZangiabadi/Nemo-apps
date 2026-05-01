@@ -58,6 +58,7 @@ import traceback
 import zipfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from openpyxl import Workbook
@@ -111,6 +112,7 @@ except Exception:
 # Local configuration
 # -----------------------------
 NEMO_BASE_URL = "https://nemo.cni.columbia.edu"
+INVOICE_TIMEZONE = ZoneInfo("America/New_York")
 
 # Internal facility fee (USD) by account/application identifier
 INTERNAL_FACILITY_FEE_BY_APPLICATION = {
@@ -127,6 +129,11 @@ NEMO_METADATA_CACHE: Dict[tuple[str, str, str], tuple[float, dict]] = {}
 
 # Application identifiers included in invoice generation
 INVOICE_APPLICATION_IDENTIFIERS = ("Local", "CDG", "Industry", "External Academia")
+
+
+def invoice_generated_at() -> dt.datetime:
+    """Return the invoice generation timestamp in Eastern time for Excel/PDF headers."""
+    return dt.datetime.now(INVOICE_TIMEZONE)
 
 # Subsidy applied to CDG usage items for reporting only.
 # We do not modify the costs from CSV; instead we record theoretical savings.
@@ -867,7 +874,11 @@ def write_table(
 
 
 def create_invoice_workbook(
-    df_group: pd.DataFrame, pi_display_name: str, period_ym: str, invoice_number: str
+    df_group: pd.DataFrame,
+    pi_display_name: str,
+    period_ym: str,
+    invoice_number: str,
+    pi_email: str = "",
 ) -> Workbook:
     wb = Workbook()
     ws = wb.active
@@ -894,14 +905,17 @@ def create_invoice_workbook(
     ws["D4"] = "Billing Month"
     ws["E4"] = ml
     ws["G4"] = "Generated"
-    ws["H4"] = dt.datetime.now()
+    ws["H4"] = invoice_generated_at().replace(tzinfo=None)
     ws["J4"] = "Invoice #"
     ws["K4"] = invoice_number
+    ws["A5"] = "Email"
+    ws["B5"] = pi_email or "N/A"
 
-    for cell in ("A4", "D4", "G4", "J4"):
+    for cell in ("A4", "D4", "G4", "J4", "A5"):
         ws[cell].font = _BOLD
     ws["B4"].font = _TITLE
     ws["E4"].font = _TITLE
+    ws["H4"].number_format = "yyyy-mm-dd hh:mm"
     ws["K4"].font = _TITLE
 
     ws.row_dimensions[1].height = 24
@@ -1190,6 +1204,7 @@ def create_invoice_pdf(
     invoice_number: str,
     pdf_path: str,
     logo_path: Optional[str] = None,
+    internal_fee_override: Optional[float] = None,
 ) -> None:
     """
     Create a PDF invoice that mirrors the XLSX content at a high level:
@@ -1256,7 +1271,11 @@ def create_invoice_pdf(
 
     # Header (logo + title/info)
     ml = month_label(period_ym)
-    internal_fee = internal_facility_fee_for_group(df_group)
+    internal_fee = (
+        float(internal_fee_override)
+        if internal_fee_override is not None
+        else internal_facility_fee_for_group(df_group)
+    )
     show_subsidy = invoice_group_has_cdg(df_group)
 
     logo = _make_logo_flowable(
@@ -1359,7 +1378,7 @@ def create_invoice_pdf(
             [P(f"Invoice #: {invoice_number}", styleNLeftBold), "", ""],
             [
                 P(
-                    f"Generated: {dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    f"Generated: {invoice_generated_at().strftime('%Y-%m-%d %H:%M')} ET",
                     styleNLeftBold,
                 ),
                 "",
@@ -1858,6 +1877,7 @@ def generate_invoices(
                 pi_display_name=pi_name,
                 period_ym=period,
                 invoice_number=invoice_number,
+                pi_email=pi_email,
             )
             xlsx_path = os.path.join(outdir, f"{filename_safe} {period_label}.xlsx")
             wb.save(xlsx_path)

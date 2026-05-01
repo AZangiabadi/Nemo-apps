@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand-lockup" href="/" aria-label="NEMO Tools Hub home">
+        <img class="brand-logo" src="/assets/columbia-logo" alt="Columbia Nano Initiative logo">
+        <span class="brand-title">NEMO Tools Hub</span>
+      </a>
+      <nav class="nav" aria-label="Main navigation">
+        <a href="/">Home</a>
+        <a href="/apps/user-batch-import">User/Account/Project Batch Import</a>
+        <a href="/apps/nemo-invoice-generator">Invoice Generator</a>
+        <a href="/apps/excel-invoice-to-pdf">Excel to PDF</a>
+        <a href="/apps/missed-reservation-report">Missed Reservations</a>
+        <a href="/apps/jumbotron">Jumbotron</a>
+      </nav>
+    </header>
+    {{ body|safe }}
+  </div>
+</body>
+</html>

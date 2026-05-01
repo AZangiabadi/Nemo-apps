@@ -15,13 +15,14 @@ from typing import Optional
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import pandas as pd
 from dotenv import load_dotenv
 from flask import (
     Flask,
     Response,
     jsonify,
     redirect,
-    render_template_string,
+    render_template,
     request,
     send_file,
     url_for,
@@ -29,6 +30,7 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import nemo_invoice_generator_with_pdf as invoice_logic
+from excel_invoice_pdf_converter import convert_excel_invoice_to_pdf
 from nemo_invoice_generator_with_pdf import NEMO_BASE_URL, create_invoice_zip
 from nemo_user_importer import BASE_URL as NEMO_API_BASE_URL, NemoClient, run_import
 
@@ -51,6 +53,8 @@ JUMBOTRON_SCROLL_INTERVAL_MS = int(
 )
 ALLOWED_IMPORT_SUFFIXES = {".xlsx", ".csv"}
 ALLOWED_INVOICE_SUFFIXES = {".csv"}
+ALLOWED_EXCEL_INVOICE_SUFFIXES = {".xlsx", ".xlsm"}
+ALLOWED_MISSED_RESERVATION_SUFFIXES = {".csv"}
 GENERATED_INVOICES_DIR = BASE_DIR / "generated_invoices"
 JOB_STATE_DIR = BASE_DIR / ".job_state"
 INVOICE_RUN_LOG_PATH = BASE_DIR / "invoice_generator_runs.log"
@@ -82,7 +86,7 @@ class AppDefinition:
 APP_DEFINITIONS: list[AppDefinition] = [
     AppDefinition(
         slug="user-batch-import",
-        title="User Batch Import From Excel",
+        title="User/Account/Project Batch Import From Excel",
         summary="Upload an Excel or CSV file and create NEMO accounts, projects, PIs, and users.",
         accent="#0f766e",
         details="Good for onboarding users in bulk with optional dry-run mode.",
@@ -93,6 +97,20 @@ APP_DEFINITIONS: list[AppDefinition] = [
         summary="Upload a usage CSV and generate invoice ZIP files with Excel and optional PDF output.",
         accent="#9a3412",
         details="Uses your existing invoice logic and keeps the ZIP ready for download.",
+    ),
+    AppDefinition(
+        slug="excel-invoice-to-pdf",
+        title="Excel Invoice to PDF",
+        summary="Upload an edited NEMO invoice workbook and generate a matching PDF invoice.",
+        accent="#475569",
+        details="Useful when you adjust the invoice Excel file and need a fresh PDF in the same format.",
+    ),
+    AppDefinition(
+        slug="missed-reservation-report",
+        title="Missed Reservation Report",
+        summary="Upload a usage CSV and list users with 5 or more missed reservations.",
+        accent="#be123c",
+        details="Counts missed-reservation charge rows by user for quick follow-up.",
     ),
     AppDefinition(
         slug="jumbotron",
@@ -113,425 +131,9 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 
-PAGE_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }}</title>
-  <style>
-    :root {
-      --ink: #12233f;
-      --paper: #f5f3ed;
-      --panel: rgba(233, 241, 249, 0.34);
-      --line: rgba(20, 35, 63, 0.12);
-      --muted: #5e6b82;
-      --hero-start: #0c3b60;
-      --hero-mid: #165b78;
-      --hero-end: #08304b;
-      --gold: #d6b36a;
-      --shadow: 0 24px 60px rgba(12, 29, 57, 0.18);
-      --soft-shadow: 0 16px 34px rgba(12, 29, 57, 0.10);
-      --radius: 28px;
-    }
-    * { box-sizing: border-box; }
-    body {
-      position: relative;
-      margin: 0;
-      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(0, 94, 184, 0.08), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(214, 179, 106, 0.10), transparent 25%),
-        var(--paper);
-    }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      background-image: url("/assets/nemo-logo");
-      background-repeat: no-repeat;
-      background-position: center center;
-      background-size: min(72vw, 980px);
-      opacity: 0.05;
-      pointer-events: none;
-      z-index: 0;
-    }
-    a { color: inherit; }
-    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
-    .shell {
-      position: relative;
-      z-index: 1;
-      max-width: 1220px;
-      margin: 0 auto;
-      padding: 30px 20px 64px;
-    }
-    .hero {
-      position: relative;
-      overflow: hidden;
-      background:
-        linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 28%),
-        radial-gradient(circle at top right, rgba(214, 179, 106, 0.24), transparent 26%),
-        linear-gradient(135deg, var(--hero-start) 0%, var(--hero-mid) 52%, var(--hero-end) 100%);
-      color: white;
-      border-radius: 36px;
-      padding: 34px 38px 38px;
-      box-shadow: var(--shadow);
-      isolation: isolate;
-      min-height: 420px;
-    }
-    .hero::after {
-      content: "";
-      position: absolute;
-      inset: auto auto -120px -80px;
-      width: 360px;
-      height: 360px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(214, 179, 106, 0.18), transparent 68%);
-      z-index: 0;
-      pointer-events: none;
-    }
-    .hero-copy {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      position: relative;
-      z-index: 1;
-      max-width: 760px;
-    }
-    .brand-lockup {
-      display: inline-flex;
-      align-items: center;
-      margin-bottom: 26px;
-      padding: 16px 20px;
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 24px;
-      background: rgba(255, 255, 255, 0.08);
-      backdrop-filter: blur(10px);
-    }
-    .hero-logo {
-      max-width: 360px;
-      width: min(360px, 52vw);
-      height: auto;
-      display: block;
-      filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.18));
-    }
-    .hero h1 {
-      margin: 0 0 14px;
-      font-size: clamp(3rem, 6vw, 5rem);
-      line-height: 0.96;
-      letter-spacing: -0.03em;
-      text-wrap: balance;
-    }
-    .hero p {
-      margin: 0;
-      max-width: 720px;
-      line-height: 1.62;
-      font-size: clamp(1.08rem, 2vw, 1.42rem);
-      color: rgba(255, 255, 255, 0.90);
-    }
-    .nav {
-      margin: 18px 0 0;
-      display: flex;
-      gap: 14px;
-      flex-wrap: wrap;
-    }
-    .nav a, .button, button {
-      display: inline-block;
-      border: 0;
-      text-decoration: none;
-      cursor: pointer;
-      border-radius: 999px;
-      padding: 13px 20px;
-      font-size: 1rem;
-      transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
-    }
-    .nav a {
-      background: rgba(255, 255, 255, 0.14);
-      color: white;
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      backdrop-filter: blur(10px);
-    }
-    .button, button {
-      background: #13264b;
-      color: white;
-      box-shadow: var(--soft-shadow);
-    }
-    .button.secondary {
-      background: transparent;
-      color: var(--ink);
-      border: 1px solid var(--line);
-    }
-    .nav a:hover, .button:hover, button:hover {
-      transform: translateY(-1px);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 26px;
-      margin-top: 30px;
-    }
-    .card, .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--soft-shadow);
-      backdrop-filter: blur(30px);
-      -webkit-backdrop-filter: blur(30px);
-    }
-    .card {
-      background: linear-gradient(
-        180deg,
-        rgba(245, 249, 253, 0.30) 0%,
-        rgba(218, 230, 242, 0.22) 100%
-      );
-      border: 1px solid rgba(255, 255, 255, 0.30);
-      padding: 28px;
-    }
-    .card h2, .panel h2 {
-      margin-top: 0;
-      margin-bottom: 12px;
-      font-size: clamp(2rem, 3vw, 2.8rem);
-      line-height: 0.96;
-      letter-spacing: -0.03em;
-    }
-    .eyebrow {
-      display: inline-block;
-      margin-bottom: 16px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      background: rgba(214, 179, 106, 0.20);
-    }
-    .panel {
-      margin-top: 30px;
-      padding: 30px;
-    }
-    form {
-      display: grid;
-      gap: 18px;
-    }
-    label {
-      display: block;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }
-    .help {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 0.93rem;
-      line-height: 1.45;
-    }
-    input[type="text"],
-    input[type="password"],
-    input[type="file"] {
-      width: 100%;
-      padding: 13px 15px;
-      border: 1px solid rgba(18, 35, 63, 0.16);
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.94);
-      font: inherit;
-    }
-    input[type="checkbox"] {
-      transform: translateY(1px);
-      margin-right: 8px;
-    }
-    fieldset {
-      margin: 0;
-      padding: 16px 18px;
-      border: 1px solid rgba(18, 35, 63, 0.12);
-      border-radius: 18px;
-      background: rgba(255, 255, 255, 0.42);
-    }
-    legend {
-      padding: 0 8px;
-      font-weight: 700;
-    }
-    .choice-row {
-      display: flex;
-      gap: 18px;
-      flex-wrap: wrap;
-    }
-    .choice-row label {
-      margin-bottom: 0;
-      font-weight: 600;
-    }
-    .actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .status {
-      margin-top: 22px;
-      padding: 18px 20px;
-      border-radius: 22px;
-      white-space: pre-wrap;
-      line-height: 1.5;
-    }
-    .status.success {
-      background: #dff5ea;
-      border: 1px solid #96d5b4;
-    }
-    .status.error {
-      background: #fde8e2;
-      border: 1px solid #efb6a8;
-    }
-    .status.info {
-      background: #edf3ff;
-      border: 1px solid #b8caef;
-    }
-    .progress-shell {
-      margin-top: 14px;
-      width: 100%;
-      height: 14px;
-      border-radius: 999px;
-      overflow: hidden;
-      background: rgba(18, 35, 63, 0.10);
-    }
-    .progress-bar {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #1a8f6c, #55c38f);
-      transition: width 220ms ease;
-    }
-    .download-list {
-      margin-top: 14px;
-      display: grid;
-      gap: 10px;
-    }
-    .download-list a {
-      text-decoration: none;
-    }
-    pre {
-      margin: 10px 0 0;
-      padding: 14px;
-      overflow-x: auto;
-      background: rgba(20, 33, 61, 0.05);
-      border-radius: 14px;
-      border: 1px solid rgba(20, 33, 61, 0.08);
-      font-size: 0.92rem;
-    }
-    .job-log {
-      max-height: 320px;
-      overflow-y: auto;
-      white-space: pre-wrap;
-      overflow-anchor: none;
-    }
-    .footer-note {
-      margin-top: 18px;
-      color: var(--muted);
-      line-height: 1.55;
-    }
-    .table-wrap {
-      overflow-x: auto;
-      border-radius: 22px;
-      border: 1px solid rgba(18, 35, 63, 0.10);
-      background: rgba(255, 255, 255, 0.55);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      padding: 14px 16px;
-      text-align: left;
-      vertical-align: top;
-      border-bottom: 1px solid rgba(18, 35, 63, 0.08);
-    }
-    th {
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.84rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      background: rgba(237, 243, 255, 0.88);
-    }
-    tbody tr:last-child td {
-      border-bottom: 0;
-    }
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 16px;
-      margin-top: 22px;
-      margin-bottom: 24px;
-    }
-    .stat-card {
-      padding: 18px 20px;
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.58);
-      border: 1px solid rgba(18, 35, 63, 0.10);
-      box-shadow: var(--soft-shadow);
-    }
-    .stat-label {
-      margin: 0 0 8px;
-      color: var(--muted);
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.82rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-    .stat-value {
-      margin: 0;
-      font-size: clamp(2rem, 4vw, 2.8rem);
-      line-height: 1;
-    }
-    .section-stack {
-      display: grid;
-      gap: 24px;
-      margin-top: 30px;
-    }
-    @media (max-width: 700px) {
-      .hero, .panel, .card { padding: 22px; }
-      .hero-logo {
-        max-width: 240px;
-        width: min(240px, 78vw);
-      }
-      body::before {
-        background-size: min(110vw, 720px);
-        background-position: center top 180px;
-      }
-      .brand-lockup {
-        padding: 12px 14px;
-      }
-      .hero h1 {
-        font-size: clamp(2.4rem, 12vw, 3.5rem);
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <section class="hero">
-      <div class="hero-copy">
-        <div class="brand-lockup">
-          <img class="hero-logo" src="/assets/columbia-logo" alt="Columbia Nano Initiative logo">
-        </div>
-        <h1>NEMO Tools Hub</h1>
-        <p>A shared Columbia Nano Initiative workspace for NEMO operations.</p>
-        <div class="nav">
-          <a href="/">Home</a>
-          <a href="/apps/user-batch-import">User Batch Import</a>
-          <a href="/apps/nemo-invoice-generator">Invoice Generator</a>
-          <a href="/apps/jumbotron">Jumbotron</a>
-        </div>
-      </div>
-    </section>
-    {{ body|safe }}
-  </div>
-</body>
-</html>
-"""
-
 
 def render_page(title: str, body: str) -> str:
-    return render_template_string(PAGE_TEMPLATE, title=title, body=body)
+    return render_template("base.html", title=title, body=body)
 
 
 def get_app(slug: str) -> AppDefinition:
@@ -561,6 +163,12 @@ def iso_timestamp(value: Optional[datetime] = None) -> str:
 
 def find_website_logo_path() -> Optional[str]:
     for candidate in (
+        "Columbia_logo.png",
+        "columbia_logo.png",
+        "Columbia_logo.jpg",
+        "columbia_logo.jpg",
+        "Columbia_logo.jpeg",
+        "columbia_logo.jpeg",
         "CNI_logo.png",
         "cni_logo.png",
         "CNI-logo.png",
@@ -965,8 +573,7 @@ def build_homepage() -> str:
     for definition in APP_DEFINITIONS:
         cards.append(
             f"""
-            <article class="card">
-              <div class="eyebrow" style="color:{html.escape(definition.accent)};">App</div>
+            <article class="card" style="--accent:{html.escape(definition.accent)};">
               <h2>{html.escape(definition.title)}</h2>
               <p>{html.escape(definition.summary)}</p>
               <p class="footer-note">{html.escape(definition.details)}</p>
@@ -1005,10 +612,9 @@ def build_import_page(
         message += f'<div class="status {status_class}"><strong>{label}</strong><pre>{html.escape(result)}</pre></div>'
 
     body = f"""
-    <section class="panel">
-      <div class="eyebrow">App 1</div>
-      <h2>User Batch Import From Excel</h2>
-      <p>Upload an Excel or CSV file, provide your NEMO API token, and choose whether the run should stay in dry-run mode.</p>
+    <section class="panel accented" style="--accent:#0f766e;">
+      <h2>User/Account/Project Batch Import From Excel</h2>
+      <p>Upload an Excel or CSV file, provide your NEMO API token.</p>
       {template_note}
       <form action="/apps/user-batch-import/run" method="post" enctype="multipart/form-data">
         <div>
@@ -1019,14 +625,15 @@ def build_import_page(
           <label for="spreadsheet">Spreadsheet</label>
           <input id="spreadsheet" type="file" name="spreadsheet" accept=".xlsx,.csv" required>
           <div class="help">Accepted formats: .xlsx and .csv</div>
+          <p>First run in dry-run mode, if successful, uncheck both dry-run and bypass cache.</p>
         </div>
         <div>
           <label><input type="checkbox" name="dry_run" checked> Dry run only</label>
           <div class="help">Keep this checked if you want to preview changes before sending them to NEMO.</div>
         </div>
         <div>
-          <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
-          <div class="help">Check this to ignore recent cached NEMO accounts, users, projects, and invoice metadata.</div>
+          <label><input type="checkbox" name="bypass_cache" unchecked> Bypass cache and use live API data</label>
+          <div class="help">Check this if you made changes to users/accounts in the past 10 minutes.</div>
         </div>
         <div class="actions">
           <button type="submit">Run Batch Import</button>
@@ -1036,15 +643,17 @@ def build_import_page(
       {message}
     </section>
     """
-    return render_page("User Batch Import", body)
+    return render_page("User/Account/Project Batch Import", body)
 
 
 def build_import_job_page(job_id: str) -> str:
     body = f"""
-    <section class="panel">
-      <div class="eyebrow">App 1</div>
-      <h2>User Batch Import In Progress</h2>
+    <section class="panel accented" style="--accent:#0f766e;">
+      <h2>User/Account/Project Batch Import In Progress</h2>
       <p>The batch import is running in the background. This page updates automatically while NEMO accounts, projects, and users are processed.</p>
+      <div class="state-row" aria-label="Job state">
+        <span id="job-state-pill" class="state-pill running">Running</span>
+      </div>
       <div id="job-status" class="status info">
         <strong id="job-title">Starting...</strong>
         <div id="job-summary" class="help">Preparing batch import job.</div>
@@ -1066,6 +675,7 @@ def build_import_job_page(job_id: str) -> str:
       const timerEl = document.getElementById("job-timer");
       const logEl = document.getElementById("job-log");
       const barEl = document.getElementById("job-progress-bar");
+      const statePillEl = document.getElementById("job-state-pill");
       let startedAtMs = null;
       let timerHandle = null;
 
@@ -1097,6 +707,8 @@ def build_import_job_page(job_id: str) -> str:
           titleEl.textContent = "Job not found";
           summaryEl.textContent = "The job data is no longer available.";
           statusEl.className = "status error";
+          statePillEl.className = "state-pill failed";
+          statePillEl.textContent = "Failed";
           return;
         }}
 
@@ -1117,6 +729,16 @@ def build_import_job_page(job_id: str) -> str:
         logEl.textContent = data.log || "";
         barEl.style.width = `${{percent}}%`;
         statusEl.className = `status ${{data.status_class || "info"}}`;
+        if (data.status === "completed") {{
+          statePillEl.className = "state-pill complete";
+          statePillEl.textContent = "Complete";
+        }} else if (data.status === "error") {{
+          statePillEl.className = "state-pill failed";
+          statePillEl.textContent = "Failed";
+        }} else {{
+          statePillEl.className = "state-pill running";
+          statePillEl.textContent = "Running";
+        }}
 
         if (data.finished) {{
           if (timerHandle !== null) {{
@@ -1161,8 +783,7 @@ def build_invoice_page(
     pdf_checked_attr = "checked" if pdf_available else ""
     pdf_disabled_attr = "" if pdf_available else "disabled"
     body = f"""
-    <section class="panel">
-      <div class="eyebrow">App 2</div>
+    <section class="panel accented" style="--accent:#9a3412;">
       <h2>NEMO Invoice Generator</h2>
       <p>Upload a NEMO usage CSV, choose the file types you want, and start a background job that reports invoice-by-invoice progress.</p>
       <form action="/apps/nemo-invoice-generator/run" method="post" enctype="multipart/form-data">
@@ -1199,12 +820,189 @@ def build_invoice_page(
     return render_page("NEMO Invoice Generator", body)
 
 
+def build_excel_invoice_pdf_page(
+    *,
+    error: str | None = None,
+    result: str | None = None,
+    download_url: str | None = None,
+) -> str:
+    pdf_available = invoice_logic._pdf_available()
+    message = ""
+    if error:
+        message += f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        extra = (
+            f'<p><a class="button" href="{html.escape(download_url)}">Download PDF</a></p>'
+            if download_url
+            else ""
+        )
+        message += f'<div class="status success"><strong>Done</strong><pre>{html.escape(result)}</pre>{extra}</div>'
+
+    disabled_attr = "" if pdf_available else "disabled"
+    pdf_note = (
+        "PDF generation is available."
+        if pdf_available
+        else "PDF generation is currently unavailable because reportlab is not installed in this Python environment."
+    )
+
+    body = f"""
+    <section class="panel accented" style="--accent:#475569;">
+      <h2>Excel Invoice to PDF</h2>
+      <p>Upload an edited Excel invoice generated by the NEMO Invoice Generator and create a new PDF with the same invoice layout.</p>
+      <form action="/apps/excel-invoice-to-pdf/run" method="post" enctype="multipart/form-data">
+        <div>
+          <label for="invoice_excel">Edited Invoice Excel File</label>
+          <input id="invoice_excel" type="file" name="invoice_excel" accept=".xlsx,.xlsm" required>
+          <div class="help">Use the workbook that contains the generated “Invoice” sheet.</div>
+        </div>
+        <div class="help">{html.escape(pdf_note)}</div>
+        <div class="actions">
+          <button type="submit" {disabled_attr}>Generate PDF</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("Excel Invoice to PDF", body)
+
+
+def missed_reservation_mask(df: pd.DataFrame) -> pd.Series:
+    candidate_columns = [
+        column
+        for column in ("Type", "Item", "Description", "Name", "Details")
+        if column in df.columns
+    ]
+    if not candidate_columns:
+        raise ValueError(
+            "CSV must include at least one column that can identify missed reservations, such as Type or Item."
+        )
+
+    mask = pd.Series(False, index=df.index)
+    for column in candidate_columns:
+        text = df[column].fillna("").astype(str).str.lower()
+        mask = mask | text.str.contains(r"missed\s+reservation", regex=True)
+        mask = mask | (text.str.contains("missed") & text.str.contains("reservation"))
+    return mask
+
+
+def build_missed_reservation_report(csv_path: Path, *, threshold: int = 5) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+    if "User" not in df.columns:
+        raise ValueError("CSV must include a User column.")
+
+    missed = df[missed_reservation_mask(df)].copy()
+    if missed.empty:
+        return pd.DataFrame(columns=["User", "Username", "Missed Reservations"])
+
+    missed["User"] = missed["User"].fillna("").astype(str).str.strip()
+    missed = missed[missed["User"] != ""]
+    if missed.empty:
+        return pd.DataFrame(columns=["User", "Username", "Missed Reservations"])
+
+    group_columns = ["User"]
+    has_username = "Username" in missed.columns
+    if has_username:
+        missed["Username"] = missed["Username"].fillna("").astype(str).str.strip()
+        group_columns.append("Username")
+
+    report = (
+        missed.groupby(group_columns, dropna=False)
+        .size()
+        .reset_index(name="Missed Reservations")
+        .sort_values(["Missed Reservations", "User"], ascending=[False, True])
+    )
+    report = report[report["Missed Reservations"] >= threshold]
+    if not has_username:
+        report.insert(1, "Username", "")
+    return report.loc[:, ["User", "Username", "Missed Reservations"]].reset_index(drop=True)
+
+
+def build_missed_reservation_page(
+    *,
+    error: str | None = None,
+    report: pd.DataFrame | None = None,
+    total_missed_users: int | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+
+    report_html = ""
+    if report is not None:
+        if report.empty:
+            report_html = """
+            <div class="status success">
+              <strong>No users at threshold</strong>
+              <div>No users had 5 or more missed reservations in this CSV.</div>
+            </div>
+            """
+        else:
+            rows = "\n".join(
+                f"""
+                <tr>
+                  <td>{html.escape(str(row["User"]))}</td>
+                  <td>{html.escape(str(row["Username"]))}</td>
+                  <td>{int(row["Missed Reservations"])}</td>
+                </tr>
+                """
+                for row in report.to_dict("records")
+            )
+            total_text = (
+                f"{total_missed_users} user(s) had at least one missed reservation. "
+                if total_missed_users is not None
+                else ""
+            )
+            report_html = f"""
+            <div class="status success">
+              <strong>Report ready</strong>
+              <div>{html.escape(total_text)}{len(report)} user(s) had 5 or more missed reservations.</div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Username</th>
+                    <th>Missed Reservations</th>
+                  </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+              </table>
+            </div>
+            """
+
+    body = f"""
+    <section class="panel accented" style="--accent:#be123c;">
+      <h2>Missed Reservation Report</h2>
+      <p>Upload a NEMO usage CSV and list users with 5 or more missed reservation rows.</p>
+      <form action="/apps/missed-reservation-report/run" method="post" enctype="multipart/form-data">
+        <div>
+          <label for="usage_csv">Usage CSV</label>
+          <input id="usage_csv" type="file" name="usage_csv" accept=".csv" required>
+          <div class="help">Rows are counted when common usage-export fields contain “missed reservation”.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Build Report</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+      {report_html}
+    </section>
+    """
+    return render_page("Missed Reservation Report", body)
+
+
 def build_invoice_job_page(job_id: str) -> str:
     body = f"""
-    <section class="panel">
-      <div class="eyebrow">App 2</div>
+    <section class="panel accented" style="--accent:#9a3412;">
       <h2>Invoice Generation In Progress</h2>
       <p>The job is running in the background. This page updates automatically while files are being created.</p>
+      <div class="state-row" aria-label="Job state">
+        <span id="job-state-pill" class="state-pill running">Running</span>
+        <span id="job-download-pill" class="state-pill">Downloads Pending</span>
+      </div>
       <div id="job-status" class="status info">
         <strong id="job-title">Starting…</strong>
         <div id="job-summary" class="help">Preparing invoice job.</div>
@@ -1228,6 +1026,8 @@ def build_invoice_job_page(job_id: str) -> str:
       const logEl = document.getElementById("job-log");
       const barEl = document.getElementById("job-progress-bar");
       const downloadsEl = document.getElementById("job-downloads");
+      const statePillEl = document.getElementById("job-state-pill");
+      const downloadPillEl = document.getElementById("job-download-pill");
       let timerStartedAtMs = null;
       let timerFinishedAtMs = null;
       let timerHandle = null;
@@ -1257,19 +1057,31 @@ def build_invoice_job_page(job_id: str) -> str:
 
       function renderDownloads(data) {{
         if (!data.finished || data.status !== "completed") {{
-          downloadsEl.innerHTML = "";
+          downloadsEl.replaceChildren();
+          downloadPillEl.className = "state-pill";
+          downloadPillEl.textContent = "Downloads Pending";
           return;
         }}
         const links = [];
         if (data.zip_download_url) {{
-          links.push(`<a class="button" href="${{data.zip_download_url}}">Download ZIP</a>`);
+          const zipLink = document.createElement("a");
+          zipLink.className = "button";
+          zipLink.href = data.zip_download_url;
+          zipLink.textContent = "Download ZIP";
+          links.push(zipLink);
         }}
         if (Array.isArray(data.file_downloads)) {{
           for (const item of data.file_downloads) {{
-            links.push(`<a class="button secondary" href="${{item.url}}">${{item.label}}</a>`);
+            const fileLink = document.createElement("a");
+            fileLink.className = "button secondary";
+            fileLink.href = item.url;
+            fileLink.textContent = item.label || "Download file";
+            links.push(fileLink);
           }}
         }}
-        downloadsEl.innerHTML = links.join("");
+        downloadsEl.replaceChildren(...links);
+        downloadPillEl.className = "state-pill downloadable";
+        downloadPillEl.textContent = "Downloadable";
       }}
 
       async function poll() {{
@@ -1281,6 +1093,8 @@ def build_invoice_job_page(job_id: str) -> str:
             titleEl.textContent = "Job not found";
             summaryEl.textContent = "The job data is no longer available.";
             statusEl.className = "status error";
+            statePillEl.className = "state-pill failed";
+            statePillEl.textContent = "Failed";
             return;
           }}
 
@@ -1308,6 +1122,16 @@ def build_invoice_job_page(job_id: str) -> str:
           logEl.scrollTop = 0;
           barEl.style.width = `${{percent}}%`;
           statusEl.className = `status ${{data.status_class || "info"}}`;
+          if (data.status === "completed") {{
+            statePillEl.className = "state-pill complete";
+            statePillEl.textContent = "Complete";
+          }} else if (data.status === "error") {{
+            statePillEl.className = "state-pill failed";
+            statePillEl.textContent = "Failed";
+          }} else {{
+            statePillEl.className = "state-pill running";
+            statePillEl.textContent = "Running";
+          }}
           renderDownloads(data);
 
           if (data.finished) {{
@@ -1606,8 +1430,7 @@ def build_jumbotron_content(report: dict[str, object]) -> str:
     """
 
     return f"""
-    <section class="panel">
-      <div class="eyebrow">Live Snapshot</div>
+    <section class="panel accented" style="--accent:#1d4ed8;">
       <h2>Live NEMO Activity</h2>
       <p>Data pulled from the NEMO API at {html.escape(generated_at)}.</p>
       {stats}
@@ -1648,233 +1471,9 @@ def build_jumbotron_page(
     else:
         content = '<div class="status info">Loading jumbotron…</div>'
 
-    template = """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Jumbotron</title>
-  <style>
-    :root {
-      --ink: #12233f;
-      --paper: #f4f0e8;
-      --panel: rgba(244, 248, 252, 0.82);
-      --line: rgba(20, 35, 63, 0.12);
-      --muted: #5e6b82;
-      --hero-start: #0c3b60;
-      --hero-mid: #165b78;
-      --hero-end: #08304b;
-      --shadow: 0 24px 60px rgba(12, 29, 57, 0.16);
-      --soft-shadow: 0 16px 34px rgba(12, 29, 57, 0.10);
-      --radius: 28px;
-    }
-    * { box-sizing: border-box; }
-    html { scroll-behavior: auto; }
-    body {
-      margin: 0;
-      font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(0, 94, 184, 0.08), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(214, 179, 106, 0.10), transparent 25%),
-        var(--paper);
-    }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      background-image: url("/assets/nemo-logo");
-      background-repeat: no-repeat;
-      background-position: center center;
-      background-size: min(72vw, 980px);
-      opacity: 0.04;
-      pointer-events: none;
-      z-index: 0;
-    }
-    .shell {
-      position: relative;
-      z-index: 1;
-      max-width: 1380px;
-      margin: 0 auto;
-      padding: 28px 24px 48px;
-    }
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--soft-shadow);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      padding: 28px;
-    }
-    h2 {
-      margin: 0 0 12px;
-      font-size: clamp(2rem, 3vw, 2.8rem);
-      line-height: 0.96;
-      letter-spacing: -0.03em;
-    }
-    p {
-      line-height: 1.55;
-    }
-    .eyebrow {
-      display: inline-block;
-      margin-bottom: 16px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: #1d4ed8;
-      background: rgba(29, 78, 216, 0.12);
-    }
-    .status {
-      margin-top: 22px;
-      padding: 18px 20px;
-      border-radius: 22px;
-      white-space: pre-wrap;
-      line-height: 1.5;
-    }
-    .status.error {
-      background: #fde8e2;
-      border: 1px solid #efb6a8;
-    }
-    .status.info {
-      background: #edf3ff;
-      border: 1px solid #b8caef;
-    }
-    .table-wrap {
-      overflow-x: auto;
-      border-radius: 22px;
-      border: 1px solid rgba(18, 35, 63, 0.10);
-      background: rgba(255, 255, 255, 0.68);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      padding: 16px 18px;
-      text-align: left;
-      vertical-align: top;
-      border-bottom: 1px solid rgba(18, 35, 63, 0.08);
-      font-size: 1.04rem;
-    }
-    th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.88rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      background: rgba(237, 243, 255, 0.96);
-    }
-    tbody tr:last-child td {
-      border-bottom: 0;
-    }
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 16px;
-      margin-top: 22px;
-      margin-bottom: 24px;
-    }
-    .stat-card {
-      padding: 18px 20px;
-      border-radius: 22px;
-      background: rgba(255, 255, 255, 0.62);
-      border: 1px solid rgba(18, 35, 63, 0.10);
-      box-shadow: var(--soft-shadow);
-    }
-    .stat-label {
-      margin: 0 0 8px;
-      color: var(--muted);
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 0.82rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-    .stat-value {
-      margin: 0;
-      font-size: clamp(2.2rem, 5vw, 3.2rem);
-      line-height: 1;
-    }
-    .section-stack {
-      display: grid;
-      gap: 24px;
-      margin-top: 24px;
-    }
-    @media (max-width: 700px) {
-      .shell, .panel { padding: 18px; }
-      th, td { padding: 12px 14px; font-size: 0.96rem; }
-    }
-  </style>
-</head>
-<body>
-  <main class="shell">
-    <div id="jumbotron-content">{{ content|safe }}</div>
-  </main>
-  <script>
-    const contentEl = document.getElementById("jumbotron-content");
-    const refreshUrl = "/apps/jumbotron/data";
-    const refreshMs = {{ refresh_ms }};
-    const scrollStepPx = {{ scroll_step_px }};
-    const scrollIntervalMs = {{ scroll_interval_ms }};
-    let lastSignature = {{ initial_signature|tojson }};
-    let scrollHandle = null;
-    let pauseUntil = 0;
-
-    function startAutoScroll() {
-      if (scrollHandle !== null) window.clearInterval(scrollHandle);
-      scrollHandle = window.setInterval(() => {
-        if (Date.now() < pauseUntil) return;
-        const maxScrollTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-        if (maxScrollTop <= 0) return;
-        const nearBottom = window.scrollY >= maxScrollTop - scrollStepPx - 2;
-        if (nearBottom) {
-          pauseUntil = Date.now() + 2500;
-          window.scrollTo({ top: 0, behavior: "smooth" });
-          return;
-        }
-        window.scrollBy(0, scrollStepPx);
-      }, scrollIntervalMs);
-    }
-
-    async function refreshIfChanged() {
-      try {
-        const response = await fetch(refreshUrl, { cache: "no-store" });
-        if (!response.ok) return;
-        const data = await response.json();
-        if (data.signature !== lastSignature) {
-          lastSignature = data.signature;
-          contentEl.innerHTML = data.html;
-          pauseUntil = Date.now() + 1200;
-          window.scrollTo({ top: 0, behavior: "smooth" });
-        }
-      } catch (error) {
-        console.error("Jumbotron refresh failed", error);
-      }
-    }
-
-    document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) {
-        refreshIfChanged();
-      }
-    });
-
-    startAutoScroll();
-    window.setInterval(refreshIfChanged, refreshMs);
-  </script>
-</body>
-</html>
-    """
     signature = json.dumps(report or {"error": error}, sort_keys=True)
-    return render_template_string(
-        template,
+    return render_template(
+        "jumbotron.html",
         content=content,
         initial_signature=signature,
         refresh_ms=JUMBOTRON_REFRESH_SECONDS * 1000,
@@ -1909,6 +1508,10 @@ def app_page(slug: str) -> str:
         return build_import_page()
     if slug == "nemo-invoice-generator":
         return build_invoice_page()
+    if slug == "excel-invoice-to-pdf":
+        return build_excel_invoice_pdf_page()
+    if slug == "missed-reservation-report":
+        return build_missed_reservation_page()
     if slug == "jumbotron":
         try:
             report = get_jumbotron_report(get_jumbotron_token())
@@ -2287,6 +1890,107 @@ def run_invoice_generator() -> str:
 
     threading.Thread(target=worker, daemon=True).start()
     return redirect(url_for("invoice_job_page", job_id=job_id))
+
+
+@app.post("/apps/excel-invoice-to-pdf/run")
+def run_excel_invoice_to_pdf() -> str:
+    invoice_excel = request.files.get("invoice_excel")
+
+    if not invoice_logic._pdf_available():
+        return build_excel_invoice_pdf_page(
+            error="PDF output is unavailable because reportlab is not installed in this Python environment."
+        )
+    if not invoice_excel or not invoice_excel.filename:
+        return build_excel_invoice_pdf_page(error="Choose an Excel invoice file to upload.")
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now().astimezone()
+    workdir = tempfile.mkdtemp(prefix=f"excel_invoice_pdf_{job_id}_")
+    try:
+        saved_path = save_upload(
+            invoice_excel,
+            allowed_suffixes=ALLOWED_EXCEL_INVOICE_SUFFIXES,
+            folder=workdir,
+        )
+        output_dir = ensure_generated_invoices_dir() / created_at.strftime("%Y-%m-%d") / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = convert_excel_invoice_to_pdf(
+            saved_path,
+            output_dir,
+            logo_path=find_pdf_logo_path(),
+        )
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "created_at": iso_timestamp(created_at),
+                    "source_filename": invoice_excel.filename,
+                    "output_file_paths": [pdf_path],
+                    "selected_options": {"source": "edited_excel_invoice"},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        set_job(
+            job_id,
+            {
+                "status": "completed",
+                "title": "Excel invoice PDF ready",
+                "summary": "The edited Excel invoice was converted to PDF.",
+                "current": 1,
+                "total": 1,
+                "log": "Excel invoice PDF generated.",
+                "log_lines": ["Excel invoice PDF generated."],
+                "zip_path": None,
+                "files": [pdf_path],
+                "workdir": str(output_dir),
+                "file_downloads": [
+                    {"label": Path(pdf_path).name, "url": f"/download/{job_id}/files/0"}
+                ],
+                "zip_download_url": None,
+                "started_at": iso_timestamp(created_at),
+                "timer_started_at": iso_timestamp(created_at),
+                "links_ready_at": iso_timestamp(),
+            },
+        )
+    except Exception as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return build_excel_invoice_pdf_page(error=str(exc))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return build_excel_invoice_pdf_page(
+        result=f"Created {Path(pdf_path).name}.",
+        download_url=f"/download/{job_id}/files/0",
+    )
+
+
+@app.post("/apps/missed-reservation-report/run")
+def run_missed_reservation_report() -> str:
+    usage_csv = request.files.get("usage_csv")
+
+    if not usage_csv or not usage_csv.filename:
+        return build_missed_reservation_page(error="Choose a usage CSV to upload.")
+
+    workdir = tempfile.mkdtemp(prefix="missed_reservations_")
+    try:
+        csv_path = save_upload(
+            usage_csv,
+            allowed_suffixes=ALLOWED_MISSED_RESERVATION_SUFFIXES,
+            folder=workdir,
+        )
+        all_counts = build_missed_reservation_report(csv_path, threshold=0)
+        report = all_counts[all_counts["Missed Reservations"] >= 5].reset_index(drop=True)
+        return build_missed_reservation_page(
+            report=report,
+            total_missed_users=len(all_counts),
+        )
+    except Exception as exc:
+        return build_missed_reservation_page(error=str(exc))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 @app.get("/apps/jumbotron/data")

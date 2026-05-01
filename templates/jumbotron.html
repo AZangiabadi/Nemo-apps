@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jumbotron</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/jumbotron.css') }}">
+</head>
+<body class="jumbotron-page">
+  <main class="shell shell-wide">
+    <div id="jumbotron-content">{{ content|safe }}</div>
+  </main>
+  <script>
+    const contentEl = document.getElementById("jumbotron-content");
+    const refreshUrl = "/apps/jumbotron/data";
+    const refreshMs = {{ refresh_ms }};
+    const scrollStepPx = {{ scroll_step_px }};
+    const scrollIntervalMs = {{ scroll_interval_ms }};
+    let lastSignature = {{ initial_signature|tojson }};
+    let scrollHandle = null;
+    let pauseUntil = 0;
+
+    function startAutoScroll() {
+      if (scrollHandle !== null) window.clearInterval(scrollHandle);
+      scrollHandle = window.setInterval(() => {
+        if (Date.now() < pauseUntil) return;
+        const maxScrollTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        if (maxScrollTop <= 0) return;
+        const nearBottom = window.scrollY >= maxScrollTop - scrollStepPx - 2;
+        if (nearBottom) {
+          pauseUntil = Date.now() + 2500;
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          return;
+        }
+        window.scrollBy(0, scrollStepPx);
+      }, scrollIntervalMs);
+    }
+
+    async function refreshIfChanged() {
+      try {
+        const response = await fetch(refreshUrl, { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.signature !== lastSignature) {
+          lastSignature = data.signature;
+          contentEl.innerHTML = data.html;
+          pauseUntil = Date.now() + 1200;
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } catch (error) {
+        console.error("Jumbotron refresh failed", error);
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        refreshIfChanged();
+      }
+    });
+
+    startAutoScroll();
+    window.setInterval(refreshIfChanged, refreshMs);
+  </script>
+</body>
+</html>

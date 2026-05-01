@@ -1,0 +1,45 @@
+html {
+  scroll-behavior: auto;
+}
+
+.jumbotron-page .shell {
+  padding-top: 20px;
+}
+
+.jumbotron-page .panel {
+  margin-top: 18px;
+  box-shadow: none;
+}
+
+.jumbotron-page h2 {
+  font-size: clamp(1.8rem, 2.7vw, 2.5rem);
+}
+
+.jumbotron-page th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f3f6fa;
+}
+
+.jumbotron-page th,
+.jumbotron-page td {
+  padding: 15px 17px;
+  font-size: 1rem;
+}
+
+.jumbotron-page .stat-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.jumbotron-page .stat-value {
+  font-size: clamp(2.1rem, 4vw, 3rem);
+}
+
+@media (max-width: 700px) {
+  .jumbotron-page th,
+  .jumbotron-page td {
+    padding: 12px 14px;
+    font-size: 0.95rem;
+  }
+}

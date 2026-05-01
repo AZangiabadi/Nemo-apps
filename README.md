@@ -3,15 +3,17 @@
 Internal Columbia Nano Initiative web app for launching NEMO-related tools from one place.
 
 Current apps:
-- `User Batch Import From Excel`
+- `User/Account/Project Batch Import From Excel`
 - `NEMO Invoice Generator`
 - `Jumbotron`
 
 ## Project Structure
 
-- [main_app.py](/Users/amiralizangiabadi/Documents/Python%20Codes/General%20Usage%20Nemo%20App/main_app.py): main Flask web app and landing page
-- [nemo_user_importer.py](/Users/amiralizangiabadi/Documents/Python%20Codes/General%20Usage%20Nemo%20App/nemo_user_importer.py): batch user import logic
-- [nemo_invoice_generator_with_pdf.py](/Users/amiralizangiabadi/Documents/Python%20Codes/General%20Usage%20Nemo%20App/nemo_invoice_generator_with_pdf.py): invoice generation logic
+- `main_app.py`: main Flask web app, routes, background job coordination, and page content builders
+- `templates/`: shared Flask/Jinja page shells
+- `static/css/`: shared app and jumbotron styles
+- `nemo_user_importer.py`: batch user import logic
+- `nemo_invoice_generator_with_pdf.py`: invoice generation logic
 
 ## Requirements
 
@@ -123,7 +125,7 @@ docker compose down
 
 ## Features
 
-### 1. User Batch Import From Excel
+### 1. User/Account/Project Batch Import From Excel
 
 - upload Excel or CSV files
 - enter a NEMO API token
