@@ -122,6 +122,13 @@ INTERNAL_FACILITY_FEE_BY_APPLICATION = {
     "Industry": 150.0,
 }
 
+PROJECT_CHARGE_CAP_BY_APPLICATION = {
+    "Local": 1500.0,
+    "CDG": 1500.0,
+    "External Academia": 2500.0,
+    "Industry": 4500.0,
+}
+
 NEMO_METADATA_CACHE_TTL_SECONDS = max(
     0, int(os.environ.get("NEMO_INVOICE_METADATA_CACHE_SECONDS", "21600"))
 )
@@ -269,6 +276,7 @@ TOOL_MAX_HOURS_BY_TOOL_ID = {
     30: 6.0,
     31: 4.0,
     32: 6.0,
+    33: 4.0,
     34: 4.0,
     35: 4.0,
     36: 4.0,
@@ -341,6 +349,7 @@ TOOL_MAX_HOURS_BY_NAME = {
     "cambridgenanotechald": 4.0,
     "parylenecoater": 6.0,
     "solarisrta": 4.0,
+    "acrosstf1700": 4.0,
     "oxfordicprieclbasedcobraiiiv": 4.0,
     "oxfordicpdriefbasedcobra300": 4.0,
     "oxfordicpriedirectload": 4.0,
@@ -430,6 +439,21 @@ def parse_nemo_datetime(s: object) -> Optional[dt.datetime]:
     return None
 
 
+def parse_adjustment_datetime(value: object) -> Optional[dt.datetime]:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed.replace(microsecond=0)
+
+
 def normalize_item(item: object) -> str:
     """Normalize Item names to match tool mapping. Removes ' (Individual)' and ' (Group)' suffixes."""
     if item is None or (isinstance(item, float) and math.isnan(item)):
@@ -445,13 +469,67 @@ def normalize_tool_lookup_key(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
+def normalize_matching_datetime(value: Optional[dt.datetime]) -> Optional[dt.datetime]:
+    if value is None:
+        return None
+    return value.replace(second=0, microsecond=0, tzinfo=None)
+
+
 def parse_tool_id(value: object) -> Optional[int]:
     if value is None or pd.isna(value):
         return None
     try:
-        return int(str(value).strip())
+        if isinstance(value, float):
+            if value.is_integer():
+                return int(value)
+            return None
+        text = str(value).strip()
+        if text.endswith(".0"):
+            text = text[:-2]
+        return int(text)
     except (TypeError, ValueError):
         return None
+
+
+def parse_hourly_rate_from_rate(rate: object) -> Optional[float]:
+    if rate is None or (isinstance(rate, float) and math.isnan(rate)):
+        return None
+    text = str(rate).strip()
+    if not text:
+        return None
+    match = re.search(r"\$?\s*(\d+(?:\.\d+)?)\s*/\s*hr\b", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def compute_adjusted_cost(
+    rate: object,
+    quantity_minutes: Optional[float],
+    original_cost: float,
+) -> float:
+    if quantity_minutes is None or pd.isna(quantity_minutes):
+        return float(original_cost)
+
+    hourly_rate = parse_hourly_rate_from_rate(rate)
+    minimum_charge = parse_minimum_charge_from_rate(rate)
+    if hourly_rate is None:
+        return float(original_cost)
+
+    adjusted_cost = hourly_rate * (float(quantity_minutes) / 60.0)
+    if minimum_charge is not None:
+        adjusted_cost = max(adjusted_cost, minimum_charge)
+    return round(adjusted_cost, 2)
+
+
+def resolve_billable_user_key(row: pd.Series) -> str:
+    username = str(row.get("Username") or "").strip()
+    if username:
+        return username
+    return str(row.get("User") or "").strip()
 
 
 def resolve_max_billable_hours(row: pd.Series) -> Optional[float]:
@@ -498,6 +576,230 @@ def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
     )
     df.loc[capped_mask, "Cost"] = scaled_cost.round(2)
     return df
+
+
+def _scale_costs_to_target(costs: pd.Series, target_total: float) -> pd.Series:
+    if costs.empty:
+        return costs
+
+    positive_mask = costs > 0
+    if not positive_mask.any():
+        return pd.Series(0.0, index=costs.index, dtype=float)
+
+    positive_costs = costs.loc[positive_mask].astype(float)
+    total_cost = float(positive_costs.sum())
+    if total_cost <= 0:
+        return pd.Series(0.0, index=costs.index, dtype=float)
+
+    target_cents = max(0, int(round(target_total * 100)))
+    raw_scaled_cents = positive_costs * target_cents / total_cost
+    floor_cents = raw_scaled_cents.apply(math.floor).astype(int)
+    remainder_cents = target_cents - int(floor_cents.sum())
+
+    if remainder_cents > 0:
+        remainders = (raw_scaled_cents - floor_cents).sort_values(ascending=False)
+        for index in remainders.index[:remainder_cents]:
+            floor_cents.loc[index] += 1
+
+    scaled = pd.Series(0.0, index=costs.index, dtype=float)
+    scaled.loc[positive_mask] = floor_cents / 100.0
+    return scaled
+
+
+def apply_project_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    if "Period" not in df.columns:
+        return df
+
+    if "Billable User Key" not in df.columns:
+        df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
+
+    capped_row_indexes: list[int] = []
+
+    for (period, user_key, project, application_identifier), index in df.groupby(
+        ["Period", "Billable User Key", "Project", "Application identifier"],
+        dropna=False,
+    ).groups.items():
+        project_cap = PROJECT_CHARGE_CAP_BY_APPLICATION.get(str(application_identifier))
+        if project_cap is None:
+            continue
+
+        group_index = pd.Index(index)
+        group_costs = df.loc[group_index, "Cost"].fillna(0.0).astype(float)
+        group_total = float(group_costs.sum())
+        if group_total <= project_cap:
+            continue
+
+        scaled_costs = _scale_costs_to_target(group_costs, project_cap)
+        capped_mask = group_costs > scaled_costs
+        if not capped_mask.any():
+            continue
+
+        capped_indexes = group_index[capped_mask]
+        capped_row_indexes.extend(capped_indexes.tolist())
+
+        df.loc[capped_indexes, "Original Project Cost"] = group_costs.loc[capped_mask]
+        df.loc[capped_indexes, "Project Cap Applied"] = project_cap
+        df.loc[capped_indexes, "Cost"] = scaled_costs.loc[capped_mask]
+
+    if capped_row_indexes:
+        df.loc[capped_row_indexes, "Project Cap Reduction"] = (
+            df.loc[capped_row_indexes, "Original Project Cost"]
+            - df.loc[capped_row_indexes, "Cost"]
+        ).round(2)
+
+    return df
+
+
+def _project_name_from_metadata(project_payload: dict[str, Any]) -> str:
+    return str(project_payload.get("name") or "").strip()
+
+
+def _project_application_identifier_from_metadata(
+    project_payload: dict[str, Any],
+) -> Optional[str]:
+    candidate_keys = (
+        "application_identifier",
+        "application identifier",
+        "account_type",
+        "account type",
+    )
+    for key in candidate_keys:
+        value = project_payload.get(key)
+        if value:
+            return str(value).strip()
+    return None
+
+
+def apply_adjustment_requests(
+    df: pd.DataFrame,
+    adjustment_requests: list[dict[str, Any]],
+    tools_by_id: Dict[int, str],
+    projects_by_name: Dict[str, dict[str, Any]],
+) -> pd.DataFrame:
+    if df.empty or not adjustment_requests or not tools_by_id:
+        return df
+
+    project_name_by_id: Dict[int, str] = {}
+    project_app_identifier_by_id: Dict[int, str] = {}
+    for project_payload in projects_by_name.values():
+        project_id = project_payload.get("id")
+        if isinstance(project_id, int):
+            project_name = _project_name_from_metadata(project_payload)
+            if project_name:
+                project_name_by_id[project_id] = project_name
+            app_identifier = _project_application_identifier_from_metadata(project_payload)
+            if app_identifier:
+                project_app_identifier_by_id[project_id] = app_identifier
+
+    working = df.copy()
+    working["_original_row_index"] = working.index
+    working["_tool_lookup_key"] = working["Item"].apply(normalize_tool_lookup_key)
+    working["_start_match_dt"] = working["Start time"].apply(parse_nemo_datetime).apply(
+        normalize_matching_datetime
+    )
+    working["_end_match_dt"] = working["End time"].apply(parse_nemo_datetime).apply(
+        normalize_matching_datetime
+    )
+
+    adjustment_df = pd.DataFrame(adjustment_requests)
+    if adjustment_df.empty:
+        return df
+
+    approved = adjustment_df[
+        adjustment_df.get("status", pd.Series(dtype=float)).eq(1)
+        & ~adjustment_df.get("deleted", pd.Series(dtype=bool)).fillna(False)
+    ].copy()
+    if approved.empty:
+        return df
+
+    used_row_indexes: set[int] = set()
+    rows_to_drop: set[int] = set()
+
+    for adjustment in approved.to_dict("records"):
+        tool_id = parse_tool_id(adjustment.get("item_tool"))
+        tool_name = tools_by_id.get(tool_id) if tool_id is not None else None
+        if not tool_name:
+            continue
+
+        tool_key = normalize_tool_lookup_key(tool_name)
+        original_start = normalize_matching_datetime(
+            parse_adjustment_datetime(adjustment.get("original_start"))
+        )
+        original_end = normalize_matching_datetime(
+            parse_adjustment_datetime(adjustment.get("original_end"))
+        )
+        if original_start is None or original_end is None:
+            continue
+
+        matches = working[
+            (working["_tool_lookup_key"] == tool_key)
+            & (working["_start_match_dt"] == original_start)
+            & (working["_end_match_dt"] == original_end)
+            & ~working["_original_row_index"].isin(used_row_indexes)
+        ]
+        if matches.empty:
+            continue
+
+        if len(matches) > 1:
+            original_project_id = parse_tool_id(adjustment.get("original_project"))
+            if original_project_id is not None:
+                original_project_name = project_name_by_id.get(original_project_id, "")
+                if original_project_name:
+                    narrowed = matches[matches["Project"] == original_project_name]
+                    if not narrowed.empty:
+                        matches = narrowed
+            if len(matches) > 1:
+                matches = matches.sort_values("_original_row_index").iloc[[0]]
+
+        matched_index = int(matches.index[0])
+        used_row_indexes.add(int(matches.iloc[0]["_original_row_index"]))
+
+        new_start_dt = parse_adjustment_datetime(adjustment.get("new_start"))
+        new_end_dt = parse_adjustment_datetime(adjustment.get("new_end"))
+        waive = bool(adjustment.get("waive"))
+
+        if waive or (
+            new_start_dt is not None
+            and new_end_dt is not None
+            and new_start_dt == new_end_dt
+        ):
+            rows_to_drop.add(matched_index)
+            continue
+
+        if new_start_dt is not None and new_end_dt is not None and new_end_dt >= new_start_dt:
+            quantity_minutes = (new_end_dt - new_start_dt).total_seconds() / 60.0
+            working.at[matched_index, "Start time"] = new_start_dt.strftime("%m/%d/%Y @ %I:%M %p")
+            working.at[matched_index, "End time"] = new_end_dt.strftime("%m/%d/%Y @ %I:%M %p")
+            working.at[matched_index, "Start_dt"] = new_start_dt
+            working.at[matched_index, "Quantity"] = quantity_minutes
+            working.at[matched_index, "Cost"] = compute_adjusted_cost(
+                working.at[matched_index, "Rate"],
+                quantity_minutes,
+                float(working.at[matched_index, "Cost"] or 0.0),
+            )
+            working.at[matched_index, "_start_match_dt"] = normalize_matching_datetime(new_start_dt)
+            working.at[matched_index, "_end_match_dt"] = normalize_matching_datetime(new_end_dt)
+
+        new_project_id = parse_tool_id(adjustment.get("new_project"))
+        if new_project_id is not None:
+            new_project_name = project_name_by_id.get(new_project_id)
+            if new_project_name:
+                working.at[matched_index, "Project"] = new_project_name
+            new_app_identifier = project_app_identifier_by_id.get(new_project_id)
+            if new_app_identifier:
+                working.at[matched_index, "Application identifier"] = new_app_identifier
+
+    if rows_to_drop:
+        working = working.drop(index=list(rows_to_drop))
+
+    working = working.drop(
+        columns=["_original_row_index", "_tool_lookup_key", "_start_match_dt", "_end_match_dt"],
+        errors="ignore",
+    )
+    return working.reset_index(drop=True)
 
 
 def parse_minimum_charge_from_rate(rate: object) -> Optional[float]:
@@ -659,6 +961,107 @@ def fetch_all_projects(
 
     _store_cached_nemo_metadata("projects", nemo_base, api_token, projects)
     return projects
+
+
+def fetch_all_tools(
+    nemo_base: str,
+    api_token: str,
+    *,
+    use_cache: bool = True,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Dict[int, str]:
+    """Fetch all tools and return a dict {tool_id: tool_name}."""
+    _requests_required()
+    if use_cache:
+        cached_tools = _load_cached_nemo_metadata("tools", nemo_base, api_token)
+        if cached_tools is not None:
+            if status_callback:
+                status_callback("Using cached NEMO tools metadata")
+            return {
+                int(key): str(value) for key, value in cached_tools.items() if str(key).isdigit()
+            }
+
+    url = nemo_base.rstrip("/") + "/api/tools/"
+    headers = {"Authorization": f"Token {api_token}"}
+    tools: Dict[int, str] = {}
+    page_number = 0
+
+    while url:
+        page_number += 1
+        if status_callback:
+            status_callback(f"Fetching NEMO tools metadata (page {page_number})")
+        r = requests.get(url, headers=headers, timeout=60)
+        r.raise_for_status()
+        payload = r.json()
+
+        if isinstance(payload, list):
+            results = payload
+            url = None
+        else:
+            results = payload.get("results", [])
+            url = payload.get("next")
+
+        for tool in results:
+            tool_id = tool.get("id")
+            tool_name = tool.get("name")
+            if isinstance(tool_id, int) and tool_name:
+                tools[tool_id] = str(tool_name)
+
+    _store_cached_nemo_metadata("tools", nemo_base, api_token, {str(k): v for k, v in tools.items()})
+    return tools
+
+
+def fetch_all_adjustment_requests(
+    nemo_base: str,
+    api_token: str,
+    *,
+    use_cache: bool = True,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> list[dict[str, Any]]:
+    """Fetch all adjustment requests."""
+    _requests_required()
+    if use_cache:
+        cached_adjustments = _load_cached_nemo_metadata(
+            "adjustment_requests", nemo_base, api_token
+        )
+        if cached_adjustments is not None:
+            if status_callback:
+                status_callback("Using cached NEMO adjustment requests")
+            records = cached_adjustments.get("results", [])
+            if isinstance(records, list):
+                return [record for record in records if isinstance(record, dict)]
+
+    url = nemo_base.rstrip("/") + "/api/adjustment_requests/"
+    headers = {"Authorization": f"Token {api_token}"}
+    adjustments: list[dict[str, Any]] = []
+    page_number = 0
+
+    while url:
+        page_number += 1
+        if status_callback:
+            status_callback(f"Fetching NEMO adjustment requests (page {page_number})")
+        r = requests.get(url, headers=headers, timeout=60)
+        r.raise_for_status()
+        payload = r.json()
+
+        if isinstance(payload, list):
+            results = payload
+            url = None
+        else:
+            results = payload.get("results", [])
+            url = payload.get("next")
+
+        for adjustment in results:
+            if isinstance(adjustment, dict):
+                adjustments.append(adjustment)
+
+    _store_cached_nemo_metadata(
+        "adjustment_requests",
+        nemo_base,
+        api_token,
+        {"results": adjustments},
+    )
+    return adjustments
 
 
 def lab_for_consumable_category(category: object) -> Optional[str]:
@@ -881,6 +1284,9 @@ def create_invoice_workbook(
     pi_email: str = "",
 ) -> Workbook:
     wb = Workbook()
+    wb.calculation.calcMode = "auto"
+    wb.calculation.calcOnSave = True
+    wb.calculation.calcCompleted = False
     wb.calculation.fullCalcOnLoad = True
     wb.calculation.forceFullCalc = True
     ws = wb.active
@@ -1040,12 +1446,11 @@ def create_invoice_workbook(
         if subtotal_cell:
             ws.cell(summary_row, 2, value=f"={subtotal_cell}")
 
-    top_lab_cells = [
-        f"B{summary_row}"
-        for lab, summary_row in summary_lab_rows.items()
-        if lab in lab_subtotal_cells
-    ]
-    ws.cell(summary_total_row, 2, value=f"=SUM({','.join(top_lab_cells + [f'B{summary_access_fee_row}'])})")
+    ws.cell(
+        summary_total_row,
+        2,
+        value=f"=SUM(B{summary_start + 1}:B{summary_access_fee_row})",
+    )
 
     # Access fee + project fees summary (once per invoice)
     if not df_group.empty:
@@ -1192,8 +1597,7 @@ def create_invoice_workbook(
             access_fee_col_letter = get_column_letter(access_fee_col)
             project_total_cell = ws.cell(row_idx, project_total_col)
             project_total_cell.value = (
-                f"=SUM({first_lab_col}{row_idx}:{last_lab_col}{row_idx},"
-                f"{access_fee_col_letter}{row_idx})"
+                f"=SUM({first_lab_col}{row_idx}:{access_fee_col_letter}{row_idx})"
             )
             project_total_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
 
@@ -1249,7 +1653,7 @@ def create_invoice_workbook(
         inv_cell = ws.cell(
             current_row,
             last_col,
-            value=f"=SUM({usage_total_cell},{bottom_access_fee_cell})",
+            value=f"=SUM({usage_total_cell}:{bottom_access_fee_cell})",
         )
         inv_cell.font = _BOLD
         inv_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
@@ -1823,7 +2227,12 @@ def create_invoice_pdf(
 # Main pipeline
 # -----------------------------
 def load_and_prepare(
-    csv_path: str, consumable_lab_map: Optional[Dict[str, str]] = None
+    csv_path: str,
+    consumable_lab_map: Optional[Dict[str, str]] = None,
+    *,
+    tools_by_id: Optional[Dict[int, str]] = None,
+    project_map: Optional[Dict[str, dict[str, Any]]] = None,
+    adjustment_requests: Optional[list[dict[str, Any]]] = None,
 ) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
 
@@ -1855,10 +2264,28 @@ def load_and_prepare(
         df["Lab"] = df["Lab"].fillna(df["Item_norm"].map(consumable_lab_map))
     df["Lab"] = df["Lab"].fillna("Unmapped")
     df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
+    df["Cost"] = pd.to_numeric(df["Cost"], errors="coerce").fillna(0.0).astype(float)
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").astype(float)
 
-    df["Cost"] = pd.to_numeric(df["Cost"], errors="coerce").fillna(0.0)
-    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce")
+    if tools_by_id and adjustment_requests:
+        df = apply_adjustment_requests(
+            df,
+            adjustment_requests=adjustment_requests,
+            tools_by_id=tools_by_id,
+            projects_by_name=project_map or {},
+        )
+        df["Item_norm"] = df["Item"].apply(normalize_item)
+        df["IsConsumable"] = df["Type"].apply(_is_consumable_type)
+        df["Lab"] = df["Item_norm"].map(TOOL_TO_LAB)
+        if consumable_lab_map:
+            df["Lab"] = df["Lab"].fillna(df["Item_norm"].map(consumable_lab_map))
+        df["Lab"] = df["Lab"].fillna("Unmapped")
+        df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
+
+    df["Period"] = df["Start_dt"].apply(period_from_start_dt)
+    df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
     df = apply_max_session_charge_caps(df)
+    df = apply_project_charge_caps(df)
     df["Subsidy"] = 0.0
     cdg_mask = df["Application identifier"].str.upper().eq("CDG")
     if cdg_mask.any():
@@ -1873,8 +2300,6 @@ def load_and_prepare(
         if minimum_charge_mask.any():
             df.loc[df.loc[cdg_mask].index[minimum_charge_mask], "Subsidy"] = 0.0
         # Do not adjust `Cost`; keep the value as in the CSV.
-
-    df["Period"] = df["Start_dt"].apply(period_from_start_dt)
 
     return df
 
@@ -1906,6 +2331,8 @@ def generate_invoices(
 
     project_map: Dict[str, dict] = {}
     consumable_lab_map: Dict[str, str] = {}
+    tools_by_id: Dict[int, str] = {}
+    adjustment_requests: list[dict[str, Any]] = []
     use_api = bool(nemo_base and api_token)
 
     if use_api:
@@ -1921,15 +2348,27 @@ def generate_invoices(
             use_cache=use_cache,
             status_callback=status_callback,
         )
+        if status_callback:
+            status_callback("Fetching tools metadata from NEMO API")
+        tools_by_id = fetch_all_tools(
+            nemo_base=nemo_base,
+            api_token=api_token,
+            use_cache=use_cache,
+            status_callback=status_callback,
+        )
+        if status_callback:
+            status_callback("Fetching adjustment requests from NEMO API")
+        adjustment_requests = fetch_all_adjustment_requests(
+            nemo_base=nemo_base,
+            api_token=api_token,
+            use_cache=use_cache,
+            status_callback=status_callback,
+        )
 
     if status_callback:
         status_callback("Reading and preparing usage CSV")
     if progress_callback:
         progress_callback(0, 0, "Reading usage CSV")
-    df = load_and_prepare(csv_path, consumable_lab_map=consumable_lab_map)
-    if df.empty:
-        return 0, 0, df
-
     if use_api:
         if status_callback:
             status_callback("Fetching project contact data from NEMO API")
@@ -1942,6 +2381,17 @@ def generate_invoices(
             status_callback=status_callback,
         )
 
+    df = load_and_prepare(
+        csv_path,
+        consumable_lab_map=consumable_lab_map,
+        tools_by_id=tools_by_id,
+        project_map=project_map,
+        adjustment_requests=adjustment_requests,
+    )
+    if df.empty:
+        return 0, 0, df
+
+    if use_api:
         pi_infos = df["Project"].apply(
             lambda p: resolve_pi_for_project(str(p), project_map)
         )
@@ -2138,7 +2588,7 @@ def create_invoice_zip(
         zip_name = f"CNI-Nemo-Invoices-{month_labels[0]}.zip"
     else:
         zip_name = (
-            f"CNI-Nemo-Invoices-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+            f"CNI-Nemo-Invoices-{invoice_generated_at().strftime('%Y%m%d-%H%M%S')}.zip"
         )
     zip_path = os.path.abspath(os.path.join(outdir, zip_name))
 
