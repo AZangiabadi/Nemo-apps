@@ -115,9 +115,9 @@ APP_DEFINITIONS: list[AppDefinition] = [
     AppDefinition(
         slug="account-project-replacement",
         title="Account/Project Replacement",
-        summary="Clone an old account/project to a new number, then deactivate the old records.",
+        summary="Move users to a new or existing account/project, then optionally deactivate the old records.",
         accent="#6d28d9",
-        details="Uses the NEMO API and runs in dry-run mode by default.",
+        details="Supports cloning to a new project or copying users to an existing project.",
     ),
     AppDefinition(
         slug="jumbotron",
@@ -327,7 +327,7 @@ def ensure_generated_invoices_dir() -> Path:
 
 def cleanup_old_generated_jobs(retention_days: int = INVOICE_RETENTION_DAYS) -> None:
     root = ensure_generated_invoices_dir()
-    cutoff = datetime.now() - timedelta(days=retention_days)
+    cutoff = datetime.now().astimezone() - timedelta(days=retention_days)
 
     for day_dir in root.iterdir():
         if not day_dir.is_dir():
@@ -344,11 +344,13 @@ def cleanup_old_generated_jobs(retention_days: int = INVOICE_RETENTION_DAYS) -> 
                     raw_created_at = metadata.get("created_at")
                     if raw_created_at:
                         created_at = datetime.fromisoformat(str(raw_created_at))
+                        if created_at.tzinfo is None:
+                            created_at = created_at.astimezone()
                 except Exception:
                     created_at = None
 
             if created_at is None:
-                created_at = datetime.fromtimestamp(job_dir.stat().st_mtime)
+                created_at = datetime.fromtimestamp(job_dir.stat().st_mtime).astimezone()
 
             if created_at < cutoff:
                 shutil.rmtree(job_dir, ignore_errors=True)
@@ -1202,12 +1204,41 @@ def _record_name_exists(records: list[dict], name: str) -> bool:
     return any(str(record.get("name", "")).strip() == name.strip() for record in records)
 
 
+def _unique_record_ids(values: object) -> list[int]:
+    if not isinstance(values, list):
+        return []
+
+    ids: set[int] = set()
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("id")
+        try:
+            ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return sorted(ids)
+
+
+def _deactivate_old_account_project(
+    client: NemoClient,
+    old_project: dict,
+    old_account: dict,
+) -> list[str]:
+    client.patch(f"projects/{old_project['id']}/", {"active": False})
+    client.patch(f"accounts/{old_account['id']}/", {"active": False})
+    return [
+        "Old project active=false",
+        "Old account active=false",
+    ]
+
+
 def clone_account_project(
     *,
     token: str,
     old_number: str,
     new_number: str,
     dry_run: bool,
+    deactivate_old: bool,
 ) -> list[str]:
     client = NemoClient(token=token, base_url=NEMO_API_BASE_URL, dry_run=dry_run)
     today = datetime.now(JUMBOTRON_TIMEZONE).date().isoformat()
@@ -1262,19 +1293,99 @@ def clone_account_project(
     )
     new_project = client.post("projects/", project_payload)
 
-    client.patch(f"projects/{old_project['id']}/", {"active": False})
-    client.patch(f"accounts/{old_account['id']}/", {"active": False})
+    deactivation_lines = (
+        _deactivate_old_account_project(client, old_project, old_account)
+        if deactivate_old
+        else ["Old project/account left active"]
+    )
 
     mode = "DRY RUN" if dry_run else "LIVE RUN"
     return [
         f"{mode} completed.",
+        "Replacement option: Replace to a new project",
         f"Old account: {old_account.get('name')} (id {old_account.get('id')})",
         f"Old project: {old_project.get('name')} (id {old_project.get('id')})",
         f"New account: {new_account.get('name')} (id {new_account.get('id')})",
         f"New project: {new_project.get('name')} (id {new_project.get('id')})",
         f"New start_date: {today}",
-        "Old project active=false",
-        "Old account active=false",
+        *deactivation_lines,
+    ]
+
+
+def replace_with_existing_account_project(
+    *,
+    token: str,
+    old_number: str,
+    existing_number: str,
+    dry_run: bool,
+    deactivate_old: bool,
+) -> list[str]:
+    client = NemoClient(token=token, base_url=NEMO_API_BASE_URL, dry_run=dry_run)
+    old_number = old_number.strip()
+    existing_number = existing_number.strip()
+    if not token.strip():
+        raise ValueError("NEMO API token is required.")
+    if not old_number:
+        raise ValueError("Old account/project number is required.")
+    if not existing_number:
+        raise ValueError("Existing account/project number is required.")
+    if old_number == existing_number:
+        raise ValueError("The old and existing account/project numbers must be different.")
+
+    accounts = client.fetch_all("accounts/")
+    projects = client.fetch_all("projects/")
+    old_project = _find_nemo_record(projects, old_number, "old project")
+    old_account = _find_account_for_project(accounts, old_project)
+    existing_project = _find_nemo_record(projects, existing_number, "existing project")
+    existing_account = _find_account_for_project(accounts, existing_project)
+
+    old_user_ids = _unique_record_ids(old_project.get("users"))
+    existing_user_ids = _unique_record_ids(existing_project.get("users"))
+    users_to_add = sorted(set(old_user_ids) - set(existing_user_ids))
+    merged_user_ids = sorted(set(existing_user_ids) | set(old_user_ids))
+
+    if users_to_add:
+        client.patch(f"projects/{existing_project['id']}/", {"users": merged_user_ids})
+
+        users_by_id = {
+            int(user["id"]): user
+            for user in client.fetch_all("users/")
+            if user.get("id") is not None
+        }
+        missing_user_ids = [user_id for user_id in users_to_add if user_id not in users_by_id]
+        if missing_user_ids:
+            raise ValueError(
+                "Could not find user record(s) copied from the old project: "
+                + ", ".join(str(user_id) for user_id in missing_user_ids)
+            )
+
+        for user_id in users_to_add:
+            user = users_by_id[user_id]
+            project_ids = _unique_record_ids(user.get("projects"))
+            if int(existing_project["id"]) not in project_ids:
+                client.patch(
+                    f"users/{user_id}/",
+                    {"projects": sorted(project_ids + [int(existing_project["id"])])},
+                )
+
+    deactivation_lines = (
+        _deactivate_old_account_project(client, old_project, old_account)
+        if deactivate_old
+        else ["Old project/account left active"]
+    )
+
+    mode = "DRY RUN" if dry_run else "LIVE RUN"
+    return [
+        f"{mode} completed.",
+        "Replacement option: Replace to an existing project/account",
+        f"Old account: {old_account.get('name')} (id {old_account.get('id')})",
+        f"Old project: {old_project.get('name')} (id {old_project.get('id')})",
+        f"Existing account: {existing_account.get('name')} (id {existing_account.get('id')})",
+        f"Existing project: {existing_project.get('name')} (id {existing_project.get('id')})",
+        f"Old project user count: {len(old_user_ids)}",
+        f"Existing project user count before: {len(existing_user_ids)}",
+        f"Users added to existing project: {len(users_to_add)}",
+        *deactivation_lines,
     ]
 
 
@@ -1292,21 +1403,32 @@ def build_account_project_replacement_page(
     body = f"""
     <section class="panel accented" style="--accent:#6d28d9;">
       <h2>Account/Project Replacement</h2>
-      <p>Clone an existing NEMO account and project to a new account/project number, then deactivate the old account and project.</p>
+      <p>Replace an old NEMO account/project by creating a new project or by moving its users to an existing project/account.</p>
       <form action="/apps/account-project-replacement/run" method="post">
         <div>
           <label for="token">NEMO API Token</label>
           <input id="token" type="password" name="token" placeholder="Enter API token" required>
         </div>
+        <fieldset>
+          <legend>Replacement Option</legend>
+          <div class="choice-row">
+            <label><input type="radio" name="replacement_mode" value="new" checked> Replace to a new project</label>
+            <label><input type="radio" name="replacement_mode" value="existing"> Replace to an existing project/account</label>
+          </div>
+        </fieldset>
         <div>
           <label for="old_number">Exact Account Name or Project ID</label>
           <input id="old_number" type="text" name="old_number" placeholder="Exact account name or project ID" required>
           <div class="help">Enter the old account name or the old project API id. The app finds the matching old account by the project name.</div>
         </div>
         <div>
-          <label for="new_number">New Account/Project Number</label>
-          <input id="new_number" type="text" name="new_number" placeholder="Exact new account/project name" required>
-          <div class="help">The new account and project inherit old metadata, use this value as their name, and get today as start_date.</div>
+          <label id="target_number_label" for="target_number">New Account/Project Number</label>
+          <input id="target_number" type="text" name="target_number" placeholder="Exact new account/project name" required>
+          <div id="target_number_help" class="help">The new account and project inherit old metadata, use this value as their name, and get today as start_date.</div>
+        </div>
+        <div>
+          <label><input type="checkbox" name="deactivate_old" checked> De-activate the old Account/Project</label>
+          <div class="help">When checked, the old project and matching old account are patched with active=false after the replacement action.</div>
         </div>
         <div>
           <label><input type="checkbox" name="dry_run" checked> Dry run only</label>
@@ -1319,6 +1441,30 @@ def build_account_project_replacement_page(
       </form>
       {message}
     </section>
+    <script>
+      const replacementModeInputs = document.querySelectorAll('input[name="replacement_mode"]');
+      const targetLabel = document.getElementById("target_number_label");
+      const targetInput = document.getElementById("target_number");
+      const targetHelp = document.getElementById("target_number_help");
+
+      function syncReplacementMode() {{
+        const selected = document.querySelector('input[name="replacement_mode"]:checked')?.value || "new";
+        if (selected === "existing") {{
+          targetLabel.textContent = "Existing Account/Project Number or Project ID";
+          targetInput.placeholder = "Exact existing account/project name or project ID";
+          targetHelp.textContent = "The users from the old project are added to this existing project. No new account or project is created.";
+        }} else {{
+          targetLabel.textContent = "New Account/Project Number";
+          targetInput.placeholder = "Exact new account/project name";
+          targetHelp.textContent = "The new account and project inherit old metadata, use this value as their name, and get today as start_date.";
+        }}
+      }}
+
+      replacementModeInputs.forEach((input) => {{
+        input.addEventListener("change", syncReplacementMode);
+      }});
+      syncReplacementMode();
+    </script>
     """
     return render_page("Account/Project Replacement", body)
 
@@ -2330,16 +2476,28 @@ def run_missed_reservation_report() -> str:
 def run_account_project_replacement() -> str:
     token = request.form.get("token", "").strip()
     old_number = request.form.get("old_number", "").strip()
-    new_number = request.form.get("new_number", "").strip()
+    target_number = request.form.get("target_number", "").strip()
+    replacement_mode = request.form.get("replacement_mode", "new").strip()
+    deactivate_old = request.form.get("deactivate_old") == "on"
     dry_run = request.form.get("dry_run") == "on"
 
     try:
-        result_lines = clone_account_project(
-            token=token,
-            old_number=old_number,
-            new_number=new_number,
-            dry_run=dry_run,
-        )
+        if replacement_mode == "existing":
+            result_lines = replace_with_existing_account_project(
+                token=token,
+                old_number=old_number,
+                existing_number=target_number,
+                dry_run=dry_run,
+                deactivate_old=deactivate_old,
+            )
+        else:
+            result_lines = clone_account_project(
+                token=token,
+                old_number=old_number,
+                new_number=target_number,
+                dry_run=dry_run,
+                deactivate_old=deactivate_old,
+            )
     except Exception as exc:
         error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
         return build_account_project_replacement_page(error=error_text)
