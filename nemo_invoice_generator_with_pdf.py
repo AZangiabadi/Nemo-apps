@@ -532,6 +532,36 @@ def resolve_billable_user_key(row: pd.Series) -> str:
     return str(row.get("User") or "").strip()
 
 
+def _row_contains_missed_reservation_text(row: pd.Series) -> bool:
+    for column in ("Type", "Item", "Description", "Name", "Details"):
+        if column not in row.index:
+            continue
+        text = str(row.get(column) or "").strip().lower()
+        if not text:
+            continue
+        if re.search(r"missed\s+reservation", text):
+            return True
+        if "missed" in text and "reservation" in text:
+            return True
+    return False
+
+
+def _row_is_staff_charge(row: pd.Series) -> bool:
+    item_text = normalize_item(row.get("Item")).strip().lower()
+    type_text = str(row.get("Type") or "").strip().lower()
+    return item_text == "staff time" or type_text == "staff_charge"
+
+
+def has_invoiceable_activity(df_group: pd.DataFrame) -> bool:
+    if df_group.empty:
+        return False
+    if float(df_group.get("Cost", pd.Series(dtype=float)).fillna(0.0).sum()) <= 0:
+        return False
+    if df_group.get("IsToolUsageCharge", pd.Series(dtype=bool)).fillna(False).any():
+        return True
+    return df_group.get("IsConsumable", pd.Series(dtype=bool)).fillna(False).any()
+
+
 def resolve_max_billable_hours(row: pd.Series) -> Optional[float]:
     for column in ("Tool ID", "Tool Id", "ToolID", "Tool"):
         if column in row.index:
@@ -549,19 +579,20 @@ def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df["Max Billable Hours"] = df.apply(resolve_max_billable_hours, axis=1)
+    max_billable_hours = pd.to_numeric(df["Max Billable Hours"], errors="coerce")
     quantity_hours = df["Quantity"] / 60.0
     capped_mask = (
         ~df["IsConsumable"]
-        & df["Max Billable Hours"].notna()
+        & max_billable_hours.notna()
         & df["Quantity"].notna()
-        & (quantity_hours > df["Max Billable Hours"])
+        & (quantity_hours > max_billable_hours)
     )
     if not capped_mask.any():
         return df
 
     original_cost = df.loc[capped_mask, "Cost"].copy()
     original_quantity = df.loc[capped_mask, "Quantity"].copy()
-    capped_quantity = df.loc[capped_mask, "Max Billable Hours"].astype(float) * 60.0
+    capped_quantity = max_billable_hours.loc[capped_mask].astype(float) * 60.0
 
     df.loc[capped_mask, "Original Quantity"] = original_quantity
     df.loc[capped_mask, "Original Cost"] = original_cost
@@ -627,7 +658,14 @@ def apply_project_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         group_index = pd.Index(index)
-        group_costs = df.loc[group_index, "Cost"].fillna(0.0).astype(float)
+        tool_usage_index = group_index[
+            df.loc[group_index, "IsToolUsageCharge"].fillna(False).astype(bool)
+            & ~df.loc[group_index, "IsStaffCharge"].fillna(False).astype(bool)
+        ]
+        if tool_usage_index.empty:
+            continue
+
+        group_costs = df.loc[tool_usage_index, "Cost"].fillna(0.0).astype(float)
         group_total = float(group_costs.sum())
         if group_total <= project_cap:
             continue
@@ -637,7 +675,7 @@ def apply_project_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
         if not capped_mask.any():
             continue
 
-        capped_indexes = group_index[capped_mask]
+        capped_indexes = tool_usage_index[capped_mask]
         capped_row_indexes.extend(capped_indexes.tolist())
 
         df.loc[capped_indexes, "Original Project Cost"] = group_costs.loc[capped_mask]
@@ -1167,8 +1205,13 @@ def internal_facility_fee_for_group(df_group: pd.DataFrame) -> float:
     Pick the invoice-level internal fee based on the application identifiers present.
     If multiple types are present, use the highest configured fee.
     """
+    real_usage_mask = df_group.get("IsToolUsageCharge", pd.Series(dtype=bool)).fillna(False)
+    df_real_usage = df_group.loc[real_usage_mask]
+    if df_real_usage.empty:
+        return 0.0
+
     app_ids = set(
-        df_group.get("Application identifier", pd.Series(dtype=str))
+        df_real_usage.get("Application identifier", pd.Series(dtype=str))
         .dropna()
         .astype(str)
     )
@@ -1193,11 +1236,12 @@ def select_access_fee_project(df_group: pd.DataFrame) -> Optional[pd.Series]:
     Rule:
     - Use the project with the highest total charges for the billing month
     """
-    if df_group.empty:
+    actual_usage = df_group[df_group.get("IsToolUsageCharge", pd.Series(dtype=bool)).fillna(False)]
+    if actual_usage.empty:
         return None
 
     proj_usage = (
-        df_group.groupby(["Project", "Application identifier"], dropna=False)["Cost"]
+        actual_usage.groupby(["Project", "Application identifier"], dropna=False)["Cost"]
         .sum()
         .reset_index(name="Usage Charges")
     )
@@ -2258,6 +2302,9 @@ def load_and_prepare(
     df["Start_dt"] = df["Start time"].apply(parse_nemo_datetime)
     df["Item_norm"] = df["Item"].apply(normalize_item)
     df["IsConsumable"] = df["Type"].apply(_is_consumable_type)
+    df["IsMissedReservation"] = df.apply(_row_contains_missed_reservation_text, axis=1)
+    df["IsStaffCharge"] = df.apply(_row_is_staff_charge, axis=1)
+    df["IsToolUsageCharge"] = ~df["IsConsumable"] & ~df["IsMissedReservation"]
 
     df["Lab"] = df["Item_norm"].map(TOOL_TO_LAB)
     if consumable_lab_map:
@@ -2276,6 +2323,9 @@ def load_and_prepare(
         )
         df["Item_norm"] = df["Item"].apply(normalize_item)
         df["IsConsumable"] = df["Type"].apply(_is_consumable_type)
+        df["IsMissedReservation"] = df.apply(_row_contains_missed_reservation_text, axis=1)
+        df["IsStaffCharge"] = df.apply(_row_is_staff_charge, axis=1)
+        df["IsToolUsageCharge"] = ~df["IsConsumable"] & ~df["IsMissedReservation"]
         df["Lab"] = df["Item_norm"].map(TOOL_TO_LAB)
         if consumable_lab_map:
             df["Lab"] = df["Lab"].fillna(df["Item_norm"].map(consumable_lab_map))
@@ -2408,21 +2458,31 @@ def generate_invoices(
     generated_paths: List[str] = []
 
     month_sequence: Dict[str, int] = {}
-    grouped = df.groupby(["PI_key", "Period"], sort=True)
-    total_invoices = grouped.ngroups
+    grouped_items = [
+        ((pi_key, period), grp)
+        for (pi_key, period), grp in df.groupby(["PI_key", "Period"], sort=True)
+        if has_invoiceable_activity(grp)
+    ]
+    total_invoices = len(grouped_items)
     processed_invoices = 0
 
-    if status_callback:
-        status_callback("Building PI contact summary workbook")
-    contact_report_path = create_pi_contact_report(outdir, df)
-    generated_paths.append(contact_report_path)
+    invoiceable_df = (
+        pd.concat([grp for _, grp in grouped_items], ignore_index=True)
+        if grouped_items
+        else df.iloc[0:0].copy()
+    )
+    if not invoiceable_df.empty:
+        if status_callback:
+            status_callback("Building PI contact summary workbook")
+        contact_report_path = create_pi_contact_report(outdir, invoiceable_df)
+        generated_paths.append(contact_report_path)
 
     if status_callback:
         status_callback(f"Prepared {total_invoices} invoice group(s)")
     if progress_callback:
         progress_callback(0, total_invoices, "Prepared invoice groups")
 
-    for (pi_key, period), grp in grouped:
+    for (pi_key, period), grp in grouped_items:
         pi_name = grp["PI_display_name"].iloc[0] or str(pi_key)
         nonempty_emails = grp["PI_email"].dropna().astype(str).str.strip()
         nonempty_emails = nonempty_emails[nonempty_emails != ""]
