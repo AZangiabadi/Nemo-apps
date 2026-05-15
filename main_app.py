@@ -9,13 +9,14 @@ import traceback
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 from flask import (
     Flask,
@@ -111,6 +112,13 @@ APP_DEFINITIONS: list[AppDefinition] = [
         summary="Upload a usage CSV and list users with 5 or more missed reservations.",
         accent="#be123c",
         details="Counts missed-reservation charge rows by user for quick follow-up.",
+    ),
+    AppDefinition(
+        slug="active-lab-users",
+        title="Active Lab Users",
+        summary="Use a NEMO API token to export user emails with recent valid lab qualifications.",
+        accent="#047857",
+        details="Creates an Excel workbook with one sheet each for Clean Room, SMCL, and Electron Microscopy.",
     ),
     AppDefinition(
         slug="account-project-replacement",
@@ -1122,6 +1130,369 @@ def build_missed_reservation_page(
     return render_page("Missed Reservation Report", body)
 
 
+LAB_QUALIFICATION_OPTIONS: dict[str, dict[str, object]] = {
+    "clean-room": {
+        "label": "Clean Room",
+        "sheet_name": "Clean Room",
+        "keywords": ("clean room", "cleanroom"),
+    },
+    "smcl": {
+        "label": "SMCL",
+        "sheet_name": "SMCL",
+        "keywords": (
+            "smcl",
+            "shared materials characterization lab",
+            "soft materials characterization lab",
+            "surface materials characterization lab",
+        ),
+    },
+    "electron-microscopy": {
+        "label": "Electron Microscopy",
+        "sheet_name": "Electron Microscopy",
+        "keywords": ("electron microscopy", "electron microscope", "electron microscopy lab"),
+    },
+}
+DEFAULT_ACTIVE_LAB_KEYS = tuple(LAB_QUALIFICATION_OPTIONS.keys())
+
+
+def normalize_api_search_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(normalize_api_search_text(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(normalize_api_search_text(item) for item in value)
+    text = str(value).lower()
+    for character in ("_", "-", "/", "\\", "(", ")", "[", "]", "{", "}", ",", ";", ":"):
+        text = text.replace(character, " ")
+    return " ".join(text.split())
+
+
+def parse_api_date(value: object) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+    for candidate in (text[:10], text):
+        try:
+            return datetime.fromisoformat(candidate).date()
+        except ValueError:
+            continue
+    return None
+
+
+def user_display_name(user: dict[str, object]) -> str:
+    display_name = str(user.get("name", "") or "").strip()
+    if display_name:
+        return display_name
+    first_name = str(user.get("first_name", "") or "").strip()
+    last_name = str(user.get("last_name", "") or "").strip()
+    return " ".join(part for part in (first_name, last_name) if part)
+
+
+def user_email(user: dict[str, object]) -> str:
+    for field in ("email", "email_address", "e_mail"):
+        email_value = str(user.get(field, "") or "").strip()
+        if email_value:
+            return email_value
+    return ""
+
+
+def user_is_active(user: dict[str, object]) -> bool:
+    for field in ("is_active", "active"):
+        if field in user:
+            return bool(user.get(field))
+    return True
+
+
+def tool_lab_keys(tool: dict[str, object]) -> set[str]:
+    search_text = normalize_api_search_text(tool)
+    matches: set[str] = set()
+    for lab_key, lab_definition in LAB_QUALIFICATION_OPTIONS.items():
+        keywords = lab_definition["keywords"]
+        if not isinstance(keywords, tuple):
+            continue
+        if any(keyword in search_text for keyword in keywords):
+            matches.add(lab_key)
+    return matches
+
+
+def tool_label(tool: dict[str, object], tool_id: int) -> str:
+    name = str(tool.get("name", "") or "").strip()
+    if name:
+        return name
+    return f"Tool {tool_id}"
+
+
+def build_active_lab_user_report(
+    *,
+    token: str,
+    selected_labs: list[str],
+    output_path: Path,
+) -> dict[str, object]:
+    if not token.strip():
+        raise ValueError("NEMO API token is required.")
+    if not selected_labs:
+        raise ValueError("Select at least one lab.")
+
+    unknown_labs = [
+        lab_key for lab_key in selected_labs if lab_key not in LAB_QUALIFICATION_OPTIONS
+    ]
+    if unknown_labs:
+        raise ValueError("Unknown lab selection: " + ", ".join(unknown_labs))
+
+    client = NemoClient(token=token, base_url=NEMO_API_BASE_URL)
+    cutoff_date = datetime.now(JUMBOTRON_TIMEZONE).date() - timedelta(days=365)
+
+    tools = client.fetch_all("tools/")
+    tools_by_id: dict[int, dict[str, object]] = {}
+    tool_ids_by_lab: dict[str, set[int]] = {lab_key: set() for lab_key in selected_labs}
+    for tool in tools:
+        tool_id = tool.get("id")
+        if not isinstance(tool_id, int):
+            continue
+        tools_by_id[tool_id] = tool
+        for lab_key in tool_lab_keys(tool):
+            if lab_key in tool_ids_by_lab:
+                tool_ids_by_lab[lab_key].add(tool_id)
+
+    qualification_endpoint = "qualifications/?" + urlencode(
+        {"qualified_on__gte": cutoff_date.isoformat()}
+    )
+    try:
+        qualifications = client.fetch_all(qualification_endpoint)
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code not in {400, 404}:
+            raise
+        qualifications = client.fetch_all("qualifications/")
+    qualifying_users_by_lab: dict[str, dict[int, dict[str, object]]] = {
+        lab_key: {} for lab_key in selected_labs
+    }
+    user_ids: set[int] = set()
+
+    for qualification in qualifications:
+        qualified_on = parse_api_date(qualification.get("qualified_on"))
+        if not qualified_on or qualified_on < cutoff_date:
+            continue
+        tool_id = qualification.get("tool")
+        user_id = qualification.get("user")
+        if not isinstance(tool_id, int) or not isinstance(user_id, int):
+            continue
+
+        for lab_key, lab_tool_ids in tool_ids_by_lab.items():
+            if tool_id not in lab_tool_ids:
+                continue
+
+            user_ids.add(user_id)
+            user_entry = qualifying_users_by_lab[lab_key].setdefault(
+                user_id,
+                {
+                    "user_id": user_id,
+                    "last_qualified_on": qualified_on,
+                    "tool_ids": set(),
+                },
+            )
+            if qualified_on > user_entry["last_qualified_on"]:
+                user_entry["last_qualified_on"] = qualified_on
+            user_entry["tool_ids"].add(tool_id)
+
+    users_by_id = fetch_lookup_map(client, "users/", user_ids)
+    lab_frames: dict[str, pd.DataFrame] = {}
+    combined_users: dict[int, dict[str, object]] = {}
+    summary_rows = []
+    skipped_inactive_by_lab: dict[str, int] = {lab_key: 0 for lab_key in selected_labs}
+
+    for lab_key in selected_labs:
+        records = []
+        lab_label = str(LAB_QUALIFICATION_OPTIONS[lab_key]["label"])
+        for user_id, qualification_info in sorted(
+            qualifying_users_by_lab[lab_key].items(),
+            key=lambda item: item[0],
+        ):
+            user = users_by_id.get(user_id, {})
+            if not user_is_active(user):
+                skipped_inactive_by_lab[lab_key] += 1
+                continue
+
+            tool_ids = sorted(qualification_info["tool_ids"])
+            qualified_tools = ", ".join(
+                tool_label(tools_by_id.get(tool_id, {}), tool_id) for tool_id in tool_ids
+            )
+            records.append(
+                {
+                    "Email": user_email(user),
+                    "Username": str(user.get("username", "") or "").strip(),
+                    "Name": user_display_name(user),
+                    "User ID": user_id,
+                    "Last Qualified On": qualification_info["last_qualified_on"].isoformat(),
+                    "Qualified Tools": qualified_tools,
+                }
+            )
+            combined_entry = combined_users.setdefault(
+                user_id,
+                {
+                    "Email": user_email(user),
+                    "Username": str(user.get("username", "") or "").strip(),
+                    "Name": user_display_name(user),
+                    "User ID": user_id,
+                    "Last Qualified On": qualification_info["last_qualified_on"],
+                    "labs": set(),
+                    "qualified_tools_by_lab": {},
+                },
+            )
+            if qualification_info["last_qualified_on"] > combined_entry["Last Qualified On"]:
+                combined_entry["Last Qualified On"] = qualification_info["last_qualified_on"]
+            combined_entry["labs"].add(lab_label)
+            combined_entry["qualified_tools_by_lab"][lab_label] = qualified_tools
+
+        frame = pd.DataFrame(
+            records,
+            columns=[
+                "Email",
+                "Username",
+                "Name",
+                "User ID",
+                "Last Qualified On",
+                "Qualified Tools",
+            ],
+        ).sort_values(["Email", "Username", "User ID"], kind="stable")
+        lab_frames[lab_key] = frame.reset_index(drop=True)
+        summary_rows.append(
+            {
+                "Lab": LAB_QUALIFICATION_OPTIONS[lab_key]["label"],
+                "Matched Tools": len(tool_ids_by_lab[lab_key]),
+                "Active Users": len(frame),
+                "Inactive Users Skipped": skipped_inactive_by_lab[lab_key],
+            }
+        )
+
+    combined_records = []
+    for combined_entry in combined_users.values():
+        qualified_tools_by_lab = combined_entry["qualified_tools_by_lab"]
+        combined_records.append(
+            {
+                "Email": combined_entry["Email"],
+                "Username": combined_entry["Username"],
+                "Name": combined_entry["Name"],
+                "User ID": combined_entry["User ID"],
+                "Labs": ", ".join(sorted(combined_entry["labs"])),
+                "Last Qualified On": combined_entry["Last Qualified On"].isoformat(),
+                "Qualified Tools By Lab": "; ".join(
+                    f"{lab}: {qualified_tools_by_lab[lab]}"
+                    for lab in sorted(qualified_tools_by_lab)
+                ),
+            }
+        )
+    combined_frame = pd.DataFrame(
+        combined_records,
+        columns=[
+            "Email",
+            "Username",
+            "Name",
+            "User ID",
+            "Labs",
+            "Last Qualified On",
+            "Qualified Tools By Lab",
+        ],
+    ).sort_values(["Email", "Username", "User ID"], kind="stable")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+        combined_frame.reset_index(drop=True).to_excel(
+            writer, sheet_name="All Labs", index=False
+        )
+        for lab_key in selected_labs:
+            sheet_name = str(LAB_QUALIFICATION_OPTIONS[lab_key]["sheet_name"])[:31]
+            lab_frames[lab_key].to_excel(writer, sheet_name=sheet_name, index=False)
+
+    return {
+        "cutoff_date": cutoff_date.isoformat(),
+        "summary_rows": summary_rows,
+        "combined_user_count": len(combined_frame),
+        "selected_labs": selected_labs,
+        "output_path": str(output_path),
+    }
+
+
+def build_active_lab_users_page(
+    *,
+    error: str | None = None,
+    result: dict[str, object] | None = None,
+    download_url: str | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        rows = []
+        for row in result.get("summary_rows", []):
+            if not isinstance(row, dict):
+                continue
+            rows.append(
+                f"""
+                <tr>
+                  <td>{html.escape(str(row.get("Lab", "")))}</td>
+                  <td>{int(row.get("Matched Tools", 0) or 0)}</td>
+                  <td>{int(row.get("Active Users", 0) or 0)}</td>
+                  <td>{int(row.get("Inactive Users Skipped", 0) or 0)}</td>
+                </tr>
+                """
+            )
+        download_link = (
+            f'<p><a class="button" href="{html.escape(download_url)}">Download Excel Workbook</a></p>'
+            if download_url
+            else ""
+        )
+        message = f"""
+        <div class="status success">
+          <strong>Report ready</strong>
+          <div>Included {int(result.get("combined_user_count", 0) or 0)} combined user(s) with qualifications dated on or after {html.escape(str(result.get("cutoff_date", "")))}.</div>
+          {download_link}
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Lab</th>
+                <th>Matched Tools</th>
+                <th>Active Users</th>
+                <th>Inactive Users Skipped</th>
+              </tr>
+            </thead>
+            <tbody>{''.join(rows)}</tbody>
+          </table>
+        </div>
+        """
+
+    body = f"""
+    <section class="panel accented" style="--accent:#047857;">
+      <h2>Active Lab Users</h2>
+      <p>Export users with a valid qualification in the past year for Clean Room, SMCL, and Electron Microscopy.</p>
+      <form action="/apps/active-lab-users/run" method="post">
+        <div>
+          <label for="token">NEMO API Token</label>
+          <input id="token" type="password" name="token" placeholder="Enter API token" required>
+          <div class="help">The report always includes Clean Room, SMCL, and Electron Microscopy.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Build Excel Report</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("Active Lab Users", body)
+
+
 ACCOUNT_CLONE_FIELDS = ("note", "type")
 PROJECT_CLONE_FIELDS = (
     "principal_investigators",
@@ -1987,6 +2358,8 @@ def app_page(slug: str) -> str:
         return build_excel_invoice_pdf_page()
     if slug == "missed-reservation-report":
         return build_missed_reservation_page()
+    if slug == "active-lab-users":
+        return build_active_lab_users_page()
     if slug == "account-project-replacement":
         return build_account_project_replacement_page()
     if slug == "jumbotron":
@@ -2470,6 +2843,74 @@ def run_missed_reservation_report() -> str:
         return build_missed_reservation_page(error=str(exc))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/apps/active-lab-users/run")
+def run_active_lab_users_report() -> str:
+    token = request.form.get("token", "").strip()
+    selected_labs = list(DEFAULT_ACTIVE_LAB_KEYS)
+
+    if not token:
+        return build_active_lab_users_page(error="Enter your NEMO API token.")
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now().astimezone()
+    output_dir = ensure_generated_invoices_dir() / created_at.strftime("%Y-%m-%d") / job_id
+    output_path = output_dir / f"active_lab_users_{created_at.date().isoformat()}.xlsx"
+
+    try:
+        result = build_active_lab_user_report(
+            token=token,
+            selected_labs=selected_labs,
+            output_path=output_path,
+        )
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "created_at": iso_timestamp(created_at),
+                    "output_file_paths": [str(output_path)],
+                    "selected_options": {
+                        "labs": selected_labs,
+                        "cutoff_date": result.get("cutoff_date"),
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        set_job(
+            job_id,
+            {
+                "status": "completed",
+                "title": "Active lab users workbook ready",
+                "summary": "The default lab sheets were exported.",
+                "current": 1,
+                "total": 1,
+                "log": "Active lab users workbook generated.",
+                "log_lines": ["Active lab users workbook generated."],
+                "zip_path": None,
+                "files": [str(output_path)],
+                "workdir": str(output_dir),
+                "file_downloads": [
+                    {"label": output_path.name, "url": f"/download/{job_id}/files/0"}
+                ],
+                "zip_download_url": None,
+                "started_at": iso_timestamp(created_at),
+                "timer_started_at": iso_timestamp(created_at),
+                "links_ready_at": iso_timestamp(),
+            },
+        )
+    except Exception as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        return build_active_lab_users_page(error=error_text)
+
+    return build_active_lab_users_page(
+        result=result,
+        download_url=f"/download/{job_id}/files/0",
+    )
 
 
 @app.post("/apps/account-project-replacement/run")

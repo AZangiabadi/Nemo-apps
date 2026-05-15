@@ -7,6 +7,7 @@ Current apps:
 - `NEMO Invoice Generator`
 - `Excel Invoice to PDF`
 - `Missed Reservation Report`
+- `Active Lab Users`
 - `Account/Project Replacement`
 - `Jumbotron`
 
@@ -154,7 +155,15 @@ docker compose down
 - list users with 5 or more missed reservation rows
 - include usernames when present in the CSV
 
-### 5. Account/Project Replacement
+### 5. Active Lab Users
+
+- enter a NEMO API token
+- exports Clean Room, SMCL, and Electron Microscopy by default
+- match those labs to tools from the tools API
+- export users with qualifications from the past year to an Excel workbook
+- writes a combined `All Labs` sheet, one sheet per selected lab, and a summary sheet
+
+### 6. Account/Project Replacement
 
 - enter a NEMO API token plus old and new account/project numbers
 - clone the old account and project metadata to the new records
@@ -162,7 +171,7 @@ docker compose down
 - deactivate the old account and project after creating the new records
 - dry-run mode is enabled by default
 
-### 6. Jumbotron
+### 7. Jumbotron
 
 - reads its NEMO API token from the `NEMO_JUMBOTRON_API_TOKEN` environment variable
 - local development can load that token from a project `.env` file
