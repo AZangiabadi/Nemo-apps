@@ -142,6 +142,8 @@ docker compose down
 - enter a NEMO API token
 - generate invoice ZIP files
 - optional PDF generation when `reportlab` is installed
+- missed reservation rows are excluded from generated invoice Excel/PDF detail lines
+- the PI contacts workbook includes a `Tool Users` sheet with each tool user, project number, and project type
 
 ### 3. Excel Invoice to PDF
 

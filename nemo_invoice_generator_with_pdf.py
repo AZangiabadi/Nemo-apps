@@ -2438,8 +2438,9 @@ def generate_invoices(
         project_map=project_map,
         adjustment_requests=adjustment_requests,
     )
+    df = df[~df["IsMissedReservation"].fillna(False)].copy()
     if df.empty:
-        return 0, 0, df
+        return 0, 0, df, []
 
     if use_api:
         pi_infos = df["Project"].apply(
@@ -2609,6 +2610,18 @@ def create_pi_contact_report(outdir: str, df: pd.DataFrame) -> str:
             max(max_length + 2, 14), 48
         )
 
+    tool_users = build_tool_user_project_report(df)
+    tool_users_sheet = workbook.create_sheet("Tool Users")
+    tool_users_sheet.append(["User", "Project Number", "Project Type"])
+    for row in tool_users.itertuples(index=False):
+        tool_users_sheet.append(list(row))
+
+    for column_cells in tool_users_sheet.columns:
+        max_length = max(len(str(cell.value or "")) for cell in column_cells)
+        tool_users_sheet.column_dimensions[column_cells[0].column_letter].width = min(
+            max(max_length + 2, 14), 56
+        )
+
     output_path = os.path.join(outdir, filename)
     workbook.save(output_path)
     try:
@@ -2616,6 +2629,36 @@ def create_pi_contact_report(outdir: str, df: pd.DataFrame) -> str:
     except Exception:
         pass
     return output_path
+
+
+def build_tool_user_project_report(df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["User", "Project Number", "Project Type"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    tool_usage_mask = df.get("IsToolUsageCharge", pd.Series(dtype=bool)).fillna(False)
+    report_source = df.loc[tool_usage_mask].copy()
+    if report_source.empty:
+        return pd.DataFrame(columns=columns)
+
+    report = (
+        report_source.loc[:, ["User", "Project", "Application identifier"]]
+        .copy()
+        .rename(
+            columns={
+                "Project": "Project Number",
+                "Application identifier": "Project Type",
+            }
+        )
+    )
+    for column in columns:
+        report[column] = report[column].fillna("").astype(str).str.strip()
+    report = report[report["User"] != ""]
+    return (
+        report.drop_duplicates()
+        .sort_values(["User", "Project Number", "Project Type"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def create_invoice_zip(
