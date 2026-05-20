@@ -7,7 +7,7 @@ What it does
 ------------
 - Reads the NEMO usage export CSV (columns like Type/User/Item/Project/Rate/Cost/...).
 - Keeps ONLY rows where Application identifier is one of:
-  "Local", "CDG", "Industry", or "External Academia".
+  "Local", "CDG", "Industry", or "External Academic".
 - Splits charges into labs using your tool->lab mapping.
 - Groups rows into one invoice per PI per month.
 - Writes an "Invoice" sheet in an XLSX with:
@@ -118,14 +118,14 @@ INVOICE_TIMEZONE = ZoneInfo("America/New_York")
 INTERNAL_FACILITY_FEE_BY_APPLICATION = {
     "Local": 50.0,
     "CDG": 50.0,
-    "External Academia": 75.0,
+    "External Academic": 75.0,
     "Industry": 150.0,
 }
 
 PROJECT_CHARGE_CAP_BY_APPLICATION = {
     "Local": 1500.0,
     "CDG": 1500.0,
-    "External Academia": 2500.0,
+    "External Academic": 2500.0,
     "Industry": 4500.0,
 }
 
@@ -135,7 +135,7 @@ NEMO_METADATA_CACHE_TTL_SECONDS = max(
 NEMO_METADATA_CACHE: Dict[tuple[str, str, str], tuple[float, dict]] = {}
 
 # Application identifiers included in invoice generation
-INVOICE_APPLICATION_IDENTIFIERS = ("Local", "CDG", "Industry", "External Academia")
+INVOICE_APPLICATION_IDENTIFIERS = ("Local", "CDG", "Industry", "External Academic")
 
 
 def invoice_generated_at() -> dt.datetime:
@@ -1883,7 +1883,7 @@ def create_invoice_pdf(
     )
 
     app_ids = set(df_group["Application identifier"].dropna().astype(str))
-    show_payment_notice = bool(app_ids.intersection({"Industry", "External Academia"}))
+    show_payment_notice = bool(app_ids.intersection({"Industry", "External Academic"}))
     if show_payment_notice:
         styleRightBold = ParagraphStyle(
             "RightBoldNotice",
