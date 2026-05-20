@@ -2277,6 +2277,7 @@ def load_and_prepare(
     tools_by_id: Optional[Dict[int, str]] = None,
     project_map: Optional[Dict[str, dict[str, Any]]] = None,
     adjustment_requests: Optional[list[dict[str, Any]]] = None,
+    filter_application_identifiers: bool = True,
 ) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
 
@@ -2297,7 +2298,8 @@ def load_and_prepare(
 
     # Include only supported application identifiers for invoicing
     df["Application identifier"] = df["Application identifier"].astype(str).str.strip()
-    df = df[df["Application identifier"].isin(INVOICE_APPLICATION_IDENTIFIERS)].copy()
+    if filter_application_identifiers:
+        df = df[df["Application identifier"].isin(INVOICE_APPLICATION_IDENTIFIERS)].copy()
 
     df["Start_dt"] = df["Start time"].apply(parse_nemo_datetime)
     df["Item_norm"] = df["Item"].apply(normalize_item)

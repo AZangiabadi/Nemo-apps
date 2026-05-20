@@ -5,6 +5,8 @@ Internal Columbia Nano Initiative web app for launching NEMO-related tools from 
 Current apps:
 - `User/Account/Project Batch Import From Excel`
 - `NEMO Invoice Generator`
+- `Detailed Financial Report`
+- `User PI Report`
 - `Excel Invoice to PDF`
 - `Missed Reservation Report`
 - `Active Lab Users`
@@ -145,19 +147,34 @@ docker compose down
 - missed reservation rows are excluded from generated invoice Excel/PDF detail lines
 - the PI contacts workbook includes a `Tool Users` sheet with each tool user, project number, and project type
 
-### 3. Excel Invoice to PDF
+### 3. Detailed Financial Report
+
+- upload a NEMO billing charges CSV
+- enter a NEMO API token
+- export transaction-level rows similar to the detailed financials reference workbook
+- includes item, date/time, member name, member email, project, PI email, project type, charge type, amount, cost before caps, and cost after caps
+- includes summary tabs by project type and charge type
+
+### 4. User PI Report
+
+- upload a NEMO billing charges CSV
+- enter a NEMO API token
+- export a workbook listing each user, username, project number, project type, PI name, PI email, and billing period
+- includes a summary sheet with row, user, project, and PI counts
+
+### 5. Excel Invoice to PDF
 
 - upload an edited NEMO invoice workbook
 - generate a matching PDF invoice
 - uses the PI email stored in the Excel invoice header
 
-### 4. Missed Reservation Report
+### 6. Missed Reservation Report
 
 - upload a NEMO usage CSV
 - list users with 5 or more missed reservation rows
 - include usernames when present in the CSV
 
-### 5. Active Lab Users
+### 7. Active Lab Users
 
 - enter a NEMO API token
 - exports Clean Room, SMCL, and Electron Microscopy by default
@@ -165,7 +182,7 @@ docker compose down
 - export users with qualifications from the past year to an Excel workbook
 - writes a combined `All Labs` sheet, one sheet per selected lab, and a summary sheet
 
-### 6. Account/Project Replacement
+### 8. Account/Project Replacement
 
 - enter a NEMO API token plus old and new account/project numbers
 - clone the old account and project metadata to the new records
@@ -173,7 +190,7 @@ docker compose down
 - deactivate the old account and project after creating the new records
 - dry-run mode is enabled by default
 
-### 7. Jumbotron
+### 9. Jumbotron
 
 - reads its NEMO API token from the `NEMO_JUMBOTRON_API_TOKEN` environment variable
 - local development can load that token from a project `.env` file

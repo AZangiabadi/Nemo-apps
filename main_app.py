@@ -100,6 +100,20 @@ APP_DEFINITIONS: list[AppDefinition] = [
         details="Uses your existing invoice logic and keeps the ZIP ready for download.",
     ),
     AppDefinition(
+        slug="detailed-financial-report",
+        title="Detailed Financial Report",
+        summary="Upload a billing charges CSV and export transaction-level financial details.",
+        accent="#334155",
+        details="Lists tool charges, consumables, staff charges, project types, PI emails, and before/after cap costs.",
+    ),
+    AppDefinition(
+        slug="user-pi-report",
+        title="User PI Report",
+        summary="Upload a billing charges CSV and export users with their projects and PIs.",
+        accent="#0e7490",
+        details="Uses the NEMO projects API to resolve each user's project PI contact.",
+    ),
+    AppDefinition(
         slug="excel-invoice-to-pdf",
         title="Excel Invoice to PDF",
         summary="Upload an edited NEMO invoice workbook and generate a matching PDF invoice.",
@@ -835,6 +849,540 @@ def build_invoice_page(
     </section>
     """
     return render_page("NEMO Invoice Generator", body)
+
+
+DETAILED_FINANCIAL_COLUMNS = [
+    "item (Tool name, or Consumable)",
+    "date & time",
+    "member name",
+    "member",
+    "project",
+    "pi email",
+    "project_type (CDG, Local, Ext. Academia, Industry)",
+    "type (tool usage, staff time, consumable)",
+    "amount (minutes, or item numbers)",
+    "cost (before caps)",
+    "cost (after caps)",
+]
+
+
+def normalize_lookup_key(value: object) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def user_lookup_candidates(user: dict[str, object]) -> list[str]:
+    candidates = []
+    for field in ("username", "email", "name"):
+        value = normalize_lookup_key(user.get(field))
+        if value:
+            candidates.append(value)
+    first_name = str(user.get("first_name", "") or "").strip()
+    last_name = str(user.get("last_name", "") or "").strip()
+    full_name = normalize_lookup_key(f"{first_name} {last_name}")
+    if full_name:
+        candidates.append(full_name)
+    return candidates
+
+
+def build_user_email_lookup(token: str) -> dict[str, str]:
+    client = NemoClient(token=token, base_url=NEMO_API_BASE_URL)
+    users = client.fetch_all("users/")
+    lookup: dict[str, str] = {}
+    for user in users:
+        email = user_email(user)
+        if not email:
+            continue
+        for candidate in user_lookup_candidates(user):
+            lookup.setdefault(candidate, email)
+    return lookup
+
+
+def email_like(value: object) -> bool:
+    text = str(value or "").strip()
+    return "@" in text and "." in text.split("@")[-1]
+
+
+def member_for_financial_row(row: dict[str, object], user_email_lookup: dict[str, str]) -> str:
+    for field in ("Email", "User email", "User Email", "Member", "member"):
+        value = str(row.get(field, "") or "").strip()
+        if value:
+            return value
+    for field in ("Username", "User"):
+        value = str(row.get(field, "") or "").strip()
+        if email_like(value):
+            return value
+    for field in ("Username", "User"):
+        key = normalize_lookup_key(row.get(field))
+        if key and key in user_email_lookup:
+            return user_email_lookup[key]
+    return str(row.get("Username", "") or row.get("User", "") or "").strip()
+
+
+def charge_type_for_financial_row(row: dict[str, object]) -> str:
+    if bool(row.get("IsMissedReservation")):
+        return "Missed reservation"
+    if bool(row.get("IsStaffCharge")):
+        return "Staff charge"
+    if bool(row.get("IsConsumable")):
+        return "Consumable"
+    return "Tools usage"
+
+
+def first_present_number(row: dict[str, object], fields: list[str]) -> float:
+    for field in fields:
+        value = row.get(field)
+        parsed = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if pd.notna(parsed):
+            return float(parsed)
+    return 0.0
+
+
+def build_detailed_financial_dataframe(
+    df: pd.DataFrame,
+    *,
+    project_map: dict[str, dict[str, object]],
+    user_email_lookup: dict[str, str],
+) -> pd.DataFrame:
+    rows = []
+    for row in df.to_dict("records"):
+        project = str(row.get("Project", "") or "").strip()
+        pi_info = invoice_logic.resolve_pi_for_project(project, project_map)
+        cost_after_caps = first_present_number(row, ["Cost"])
+        cost_before_caps = first_present_number(
+            row,
+            ["Original Cost", "Original Project Cost", "Cost"],
+        )
+        amount = first_present_number(row, ["Original Quantity", "Quantity"])
+        rows.append(
+            {
+                "item (Tool name, or Consumable)": str(
+                    row.get("Item", "") or row.get("Item_norm", "") or ""
+                ).strip(),
+                "date & time": row.get("Start_dt"),
+                "member name": str(row.get("User", "") or "").strip(),
+                "member": member_for_financial_row(row, user_email_lookup),
+                "project": project,
+                "pi email": str(pi_info.email or "").strip(),
+                "project_type (CDG, Local, Ext. Academia, Industry)": str(
+                    row.get("Application identifier", "") or ""
+                ).strip(),
+                "type (tool usage, staff time, consumable)": charge_type_for_financial_row(row),
+                "amount (minutes, or item numbers)": amount,
+                "cost (before caps)": cost_before_caps,
+                "cost (after caps)": cost_after_caps,
+            }
+        )
+
+    report_df = pd.DataFrame(rows, columns=DETAILED_FINANCIAL_COLUMNS)
+    if report_df.empty:
+        return report_df
+    report_df = report_df.sort_values(
+        [
+            "item (Tool name, or Consumable)",
+            "date & time",
+            "member name",
+            "member",
+            "project",
+        ],
+        kind="stable",
+    ).reset_index(drop=True)
+    return report_df
+
+
+def write_report_sheet(
+    writer: pd.ExcelWriter,
+    sheet_name: str,
+    df: pd.DataFrame,
+    *,
+    currency_columns: set[str] | None = None,
+    date_columns: set[str] | None = None,
+) -> None:
+    currency_columns = currency_columns or set()
+    date_columns = date_columns or set()
+    df.to_excel(writer, sheet_name=sheet_name, index=False)
+    worksheet = writer.sheets[sheet_name]
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for cell in worksheet[1]:
+        cell.font = invoice_logic._BOLD
+        cell.fill = invoice_logic._HEADER_FILL
+        cell.border = invoice_logic._BORDER_THIN
+        cell.alignment = invoice_logic.Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+    for column_index, column_name in enumerate(df.columns, start=1):
+        for cell in worksheet.iter_cols(
+            min_col=column_index,
+            max_col=column_index,
+            min_row=2,
+            max_row=worksheet.max_row,
+        ):
+            for item in cell:
+                item.border = invoice_logic._BORDER_THIN
+                item.alignment = invoice_logic.Alignment(vertical="top", wrap_text=True)
+                if column_name in currency_columns:
+                    item.number_format = invoice_logic.numbers.FORMAT_CURRENCY_USD_SIMPLE
+                elif column_name in date_columns:
+                    item.number_format = "yyyy-mm-dd hh:mm:ss"
+    invoice_logic.autosize_columns(worksheet, min_width=11, max_width=58)
+
+
+def build_detailed_financial_report(
+    *,
+    csv_path: Path,
+    token: str,
+    output_path: Path,
+    use_cache: bool = True,
+) -> dict[str, object]:
+    if not token.strip():
+        raise ValueError("NEMO API token is required.")
+
+    project_map = invoice_logic.fetch_all_projects(
+        nemo_base=NEMO_BASE_URL,
+        api_token=token,
+        use_cache=use_cache,
+    )
+    consumable_lab_map = invoice_logic.fetch_all_consumables(
+        nemo_base=NEMO_BASE_URL,
+        api_token=token,
+        use_cache=use_cache,
+    )
+    tools_by_id = invoice_logic.fetch_all_tools(
+        nemo_base=NEMO_BASE_URL,
+        api_token=token,
+        use_cache=use_cache,
+    )
+    adjustment_requests = invoice_logic.fetch_all_adjustment_requests(
+        nemo_base=NEMO_BASE_URL,
+        api_token=token,
+        use_cache=use_cache,
+    )
+    try:
+        user_email_lookup = build_user_email_lookup(token)
+    except Exception:
+        user_email_lookup = {}
+
+    prepared_df = invoice_logic.load_and_prepare(
+        str(csv_path),
+        consumable_lab_map=consumable_lab_map,
+        tools_by_id=tools_by_id,
+        project_map=project_map,
+        adjustment_requests=adjustment_requests,
+        filter_application_identifiers=False,
+    )
+    if prepared_df.empty:
+        raise ValueError("No supported billing charge rows found in the CSV.")
+
+    detailed_df = build_detailed_financial_dataframe(
+        prepared_df,
+        project_map=project_map,
+        user_email_lookup=user_email_lookup,
+    )
+    if detailed_df.empty:
+        raise ValueError("No detailed financial rows could be created from this CSV.")
+
+    type_column = "type (tool usage, staff time, consumable)"
+    project_type_column = "project_type (CDG, Local, Ext. Academia, Industry)"
+    cost_before_column = "cost (before caps)"
+    cost_after_column = "cost (after caps)"
+    amount_column = "amount (minutes, or item numbers)"
+
+    summary_df = pd.DataFrame(
+        [
+            {"Metric": "Rows", "Value": len(detailed_df)},
+            {"Metric": "Unique Members", "Value": detailed_df["member"].nunique()},
+            {"Metric": "Unique Projects", "Value": detailed_df["project"].nunique()},
+            {"Metric": "Total Cost Before Caps", "Value": detailed_df[cost_before_column].sum()},
+            {"Metric": "Total Cost After Caps", "Value": detailed_df[cost_after_column].sum()},
+            {
+                "Metric": "Cap Savings",
+                "Value": detailed_df[cost_before_column].sum()
+                - detailed_df[cost_after_column].sum(),
+            },
+        ]
+    )
+    by_project_type = (
+        detailed_df.groupby(project_type_column, dropna=False)
+        .agg(
+            Rows=("member", "size"),
+            Members=("member", "nunique"),
+            Projects=("project", "nunique"),
+            Amount=(amount_column, "sum"),
+            Cost_Before_Caps=(cost_before_column, "sum"),
+            Cost_After_Caps=(cost_after_column, "sum"),
+        )
+        .reset_index()
+        .rename(
+            columns={
+                project_type_column: "Project Type",
+                "Cost_Before_Caps": "Cost Before Caps",
+                "Cost_After_Caps": "Cost After Caps",
+            }
+        )
+    )
+    by_charge_type = (
+        detailed_df.groupby(type_column, dropna=False)
+        .agg(
+            Rows=("member", "size"),
+            Members=("member", "nunique"),
+            Projects=("project", "nunique"),
+            Amount=(amount_column, "sum"),
+            Cost_Before_Caps=(cost_before_column, "sum"),
+            Cost_After_Caps=(cost_after_column, "sum"),
+        )
+        .reset_index()
+        .rename(
+            columns={
+                type_column: "Charge Type",
+                "Cost_Before_Caps": "Cost Before Caps",
+                "Cost_After_Caps": "Cost After Caps",
+            }
+        )
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        write_report_sheet(
+            writer,
+            "Detailed Financials",
+            detailed_df,
+            currency_columns={cost_before_column, cost_after_column},
+            date_columns={"date & time"},
+        )
+        write_report_sheet(
+            writer,
+            "Summary",
+            summary_df,
+        )
+        write_report_sheet(
+            writer,
+            "By Project Type",
+            by_project_type,
+            currency_columns={"Cost Before Caps", "Cost After Caps"},
+        )
+        write_report_sheet(
+            writer,
+            "By Charge Type",
+            by_charge_type,
+            currency_columns={"Cost Before Caps", "Cost After Caps"},
+        )
+
+    return {
+        "row_count": len(detailed_df),
+        "unique_member_count": int(detailed_df["member"].nunique()),
+        "unique_project_count": int(detailed_df["project"].nunique()),
+        "total_cost_after_caps": float(detailed_df[cost_after_column].sum()),
+        "output_path": str(output_path),
+    }
+
+
+def build_detailed_financial_report_page(
+    *,
+    error: str | None = None,
+    result: dict[str, object] | None = None,
+    download_url: str | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        download_link = (
+            f'<p><a class="button" href="{html.escape(download_url)}">Download Excel Workbook</a></p>'
+            if download_url
+            else ""
+        )
+        message = f"""
+        <div class="status success">
+          <strong>Report ready</strong>
+          <div>
+            {int(result.get("row_count", 0) or 0)} charge row(s),
+            {int(result.get("unique_member_count", 0) or 0)} member(s),
+            {int(result.get("unique_project_count", 0) or 0)} project(s).
+          </div>
+          {download_link}
+        </div>
+        """
+
+    body = f"""
+    <section class="panel accented" style="--accent:#334155;">
+      <h2>Detailed Financial Report</h2>
+      <p>Upload a billing charges CSV and create a transaction-level Excel report for tool usage, consumables, staff charges, and other charge rows.</p>
+      <form action="/apps/detailed-financial-report/run" method="post" enctype="multipart/form-data">
+        <div>
+          <label for="api_token">NEMO API Token</label>
+          <input id="api_token" type="password" name="api_token" placeholder="Enter API token" required>
+        </div>
+        <div>
+          <label for="csv_file">Billing Charges CSV</label>
+          <input id="csv_file" type="file" name="csv_file" accept=".csv" required>
+          <div class="help">Use the same NEMO billing charges CSV accepted by the invoice generator.</div>
+        </div>
+        <div>
+          <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
+          <div class="help">Check this to force fresh NEMO project, tool, consumable, adjustment, and user metadata.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Build Detailed Financials</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("Detailed Financial Report", body)
+
+
+def build_user_pi_report(
+    *,
+    csv_path: Path,
+    token: str,
+    output_path: Path,
+    use_cache: bool = True,
+) -> dict[str, object]:
+    if not token.strip():
+        raise ValueError("NEMO API token is required.")
+
+    project_map = invoice_logic.fetch_all_projects(
+        nemo_base=NEMO_BASE_URL,
+        api_token=token,
+        use_cache=use_cache,
+    )
+    df = invoice_logic.load_and_prepare(
+        str(csv_path),
+        project_map=project_map,
+    )
+    if "IsMissedReservation" in df.columns:
+        df = df[~df["IsMissedReservation"].fillna(False)].copy()
+    if df.empty:
+        raise ValueError("No billing charge rows found after filtering the CSV.")
+
+    rows = []
+    for row in df.to_dict("records"):
+        project = str(row.get("Project", "") or "").strip()
+        if not project:
+            continue
+        pi_info = invoice_logic.resolve_pi_for_project(project, project_map)
+        user = str(row.get("User", "") or "").strip()
+        username = str(row.get("Username", "") or "").strip()
+        if not user and username:
+            user = username
+        rows.append(
+            {
+                "User": user,
+                "Username": username,
+                "Project Number": project,
+                "Project Type": str(row.get("Application identifier", "")).strip(),
+                "PI Name": str(pi_info.display_name or "").strip(),
+                "PI Email": str(pi_info.email or "").strip(),
+                "Billing Period": str(row.get("Period", "") or "").strip(),
+            }
+        )
+
+    report_df = pd.DataFrame(
+        rows,
+        columns=[
+            "User",
+            "Username",
+            "Project Number",
+            "Project Type",
+            "PI Name",
+            "PI Email",
+            "Billing Period",
+        ],
+    )
+    if report_df.empty:
+        raise ValueError("No users with projects were found in the billing charges CSV.")
+
+    for column in report_df.columns:
+        report_df[column] = report_df[column].fillna("").astype(str).str.strip()
+    report_df = (
+        report_df.drop_duplicates()
+        .sort_values(
+            ["PI Name", "Project Number", "User", "Username", "Billing Period"],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        report_df.to_excel(writer, sheet_name="Users and PIs", index=False)
+        summary_df = pd.DataFrame(
+            [
+                {"Metric": "Rows", "Value": len(report_df)},
+                {"Metric": "Unique Users", "Value": report_df["User"].nunique()},
+                {
+                    "Metric": "Unique Projects",
+                    "Value": report_df["Project Number"].nunique(),
+                },
+                {"Metric": "Unique PIs", "Value": report_df["PI Name"].nunique()},
+            ]
+        )
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+    return {
+        "row_count": len(report_df),
+        "unique_user_count": int(report_df["User"].nunique()),
+        "unique_project_count": int(report_df["Project Number"].nunique()),
+        "unique_pi_count": int(report_df["PI Name"].nunique()),
+        "output_path": str(output_path),
+    }
+
+
+def build_user_pi_report_page(
+    *,
+    error: str | None = None,
+    result: dict[str, object] | None = None,
+    download_url: str | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        download_link = (
+            f'<p><a class="button" href="{html.escape(download_url)}">Download Excel Workbook</a></p>'
+            if download_url
+            else ""
+        )
+        message = f"""
+        <div class="status success">
+          <strong>Report ready</strong>
+          <div>
+            {int(result.get("unique_user_count", 0) or 0)} user(s),
+            {int(result.get("unique_project_count", 0) or 0)} project(s),
+            and {int(result.get("unique_pi_count", 0) or 0)} PI(s).
+          </div>
+          {download_link}
+        </div>
+        """
+
+    body = f"""
+    <section class="panel accented" style="--accent:#0e7490;">
+      <h2>User PI Report</h2>
+      <p>Upload a billing charges CSV and export each user with their project number, project type, and PI contact.</p>
+      <form action="/apps/user-pi-report/run" method="post" enctype="multipart/form-data">
+        <div>
+          <label for="api_token">NEMO API Token</label>
+          <input id="api_token" type="password" name="api_token" placeholder="Enter API token" required>
+        </div>
+        <div>
+          <label for="csv_file">Billing Charges CSV</label>
+          <input id="csv_file" type="file" name="csv_file" accept=".csv" required>
+          <div class="help">Use the same NEMO usage or billing charges CSV accepted by the invoice generator.</div>
+        </div>
+        <div>
+          <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
+          <div class="help">Check this to force fresh NEMO project contact data.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Build User PI Report</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("User PI Report", body)
 
 
 def build_excel_invoice_pdf_page(
@@ -2354,6 +2902,10 @@ def app_page(slug: str) -> str:
         return build_import_page()
     if slug == "nemo-invoice-generator":
         return build_invoice_page()
+    if slug == "detailed-financial-report":
+        return build_detailed_financial_report_page()
+    if slug == "user-pi-report":
+        return build_user_pi_report_page()
     if slug == "excel-invoice-to-pdf":
         return build_excel_invoice_pdf_page()
     if slug == "missed-reservation-report":
@@ -2843,6 +3395,170 @@ def run_missed_reservation_report() -> str:
         return build_missed_reservation_page(error=str(exc))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+@app.post("/apps/detailed-financial-report/run")
+def run_detailed_financial_report() -> str:
+    csv_file = request.files.get("csv_file")
+    api_token = request.form.get("api_token", "").strip()
+    bypass_cache = request.form.get("bypass_cache") == "on"
+
+    if not api_token:
+        return build_detailed_financial_report_page(error="NEMO API token is required.")
+    if not csv_file or not csv_file.filename:
+        return build_detailed_financial_report_page(
+            error="Choose a billing charges CSV to upload."
+        )
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now().astimezone()
+    workdir = tempfile.mkdtemp(prefix=f"detailed_financial_{job_id}_")
+    output_dir = ensure_generated_invoices_dir() / created_at.strftime("%Y-%m-%d") / job_id
+    output_path = output_dir / f"detailed_financials_{created_at.date().isoformat()}.xlsx"
+
+    try:
+        csv_path = save_upload(
+            csv_file,
+            allowed_suffixes=ALLOWED_INVOICE_SUFFIXES,
+            folder=workdir,
+        )
+        result = build_detailed_financial_report(
+            csv_path=csv_path,
+            token=api_token,
+            output_path=output_path,
+            use_cache=not bypass_cache,
+        )
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "created_at": iso_timestamp(created_at),
+                    "source_filename": csv_file.filename,
+                    "output_file_paths": [str(output_path)],
+                    "selected_options": {
+                        "source": "detailed_financial_report",
+                        "cache_mode": "Live API" if bypass_cache else "Cached API",
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        set_job(
+            job_id,
+            {
+                "status": "completed",
+                "title": "Detailed financial report ready",
+                "summary": "The detailed financial workbook was exported.",
+                "current": 1,
+                "total": 1,
+                "log": "Detailed financial report generated.",
+                "log_lines": ["Detailed financial report generated."],
+                "zip_path": None,
+                "files": [str(output_path)],
+                "workdir": str(output_dir),
+                "file_downloads": [
+                    {"label": output_path.name, "url": f"/download/{job_id}/files/0"}
+                ],
+                "zip_download_url": None,
+                "started_at": iso_timestamp(created_at),
+                "timer_started_at": iso_timestamp(created_at),
+                "links_ready_at": iso_timestamp(),
+            },
+        )
+    except Exception as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        return build_detailed_financial_report_page(error=error_text)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return build_detailed_financial_report_page(
+        result=result,
+        download_url=f"/download/{job_id}/files/0",
+    )
+
+
+@app.post("/apps/user-pi-report/run")
+def run_user_pi_report() -> str:
+    csv_file = request.files.get("csv_file")
+    api_token = request.form.get("api_token", "").strip()
+    bypass_cache = request.form.get("bypass_cache") == "on"
+
+    if not api_token:
+        return build_user_pi_report_page(error="NEMO API token is required.")
+    if not csv_file or not csv_file.filename:
+        return build_user_pi_report_page(error="Choose a billing charges CSV to upload.")
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now().astimezone()
+    workdir = tempfile.mkdtemp(prefix=f"user_pi_report_{job_id}_")
+    output_dir = ensure_generated_invoices_dir() / created_at.strftime("%Y-%m-%d") / job_id
+    output_path = output_dir / f"user_pi_report_{created_at.date().isoformat()}.xlsx"
+
+    try:
+        csv_path = save_upload(
+            csv_file,
+            allowed_suffixes=ALLOWED_INVOICE_SUFFIXES,
+            folder=workdir,
+        )
+        result = build_user_pi_report(
+            csv_path=csv_path,
+            token=api_token,
+            output_path=output_path,
+            use_cache=not bypass_cache,
+        )
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "created_at": iso_timestamp(created_at),
+                    "source_filename": csv_file.filename,
+                    "output_file_paths": [str(output_path)],
+                    "selected_options": {
+                        "source": "user_pi_report",
+                        "cache_mode": "Live API" if bypass_cache else "Cached API",
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        set_job(
+            job_id,
+            {
+                "status": "completed",
+                "title": "User PI report ready",
+                "summary": "The user and PI workbook was exported.",
+                "current": 1,
+                "total": 1,
+                "log": "User PI report generated.",
+                "log_lines": ["User PI report generated."],
+                "zip_path": None,
+                "files": [str(output_path)],
+                "workdir": str(output_dir),
+                "file_downloads": [
+                    {"label": output_path.name, "url": f"/download/{job_id}/files/0"}
+                ],
+                "zip_download_url": None,
+                "started_at": iso_timestamp(created_at),
+                "timer_started_at": iso_timestamp(created_at),
+                "links_ready_at": iso_timestamp(),
+            },
+        )
+    except Exception as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        return build_user_pi_report_page(error=error_text)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return build_user_pi_report_page(
+        result=result,
+        download_url=f"/download/{job_id}/files/0",
+    )
 
 
 @app.post("/apps/active-lab-users/run")
