@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 .vscode/
 generated_invoices/
+outputs/
 .job_state/
 invoice_generator_runs.log
 .env
