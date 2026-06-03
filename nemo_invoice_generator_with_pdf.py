@@ -552,6 +552,84 @@ def _row_is_staff_charge(row: pd.Series) -> bool:
     return item_text == "staff time" or type_text == "staff_charge"
 
 
+def _is_staff_time_item(value: object) -> bool:
+    return normalize_item(value).strip().lower() == "staff time"
+
+
+def apply_staff_time_lab_associations(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "End_dt" not in df.columns:
+        return df
+
+    required = {"User", "Project", "Start_dt", "End_dt", "Item_norm", "Lab"}
+    if not required.issubset(df.columns):
+        return df
+
+    staff_time_mask = df["Item_norm"].apply(_is_staff_time_item)
+    if not staff_time_mask.any():
+        return df
+
+    candidate_mask = (
+        ~staff_time_mask
+        & df.get("IsToolUsageCharge", pd.Series(False, index=df.index)).fillna(False)
+        & df["Start_dt"].notna()
+        & df["End_dt"].notna()
+    )
+    if not candidate_mask.any():
+        return df
+
+    tool_lab_by_key: dict[tuple[object, object, object, object], str] = {}
+    for _, row in df.loc[candidate_mask].sort_index(kind="stable").iterrows():
+        key = (row["User"], row["Project"], row["Start_dt"], row["End_dt"])
+        lab = str(row.get("Lab") or "").strip()
+        if lab:
+            tool_lab_by_key.setdefault(key, lab)
+
+    if not tool_lab_by_key:
+        return df
+
+    for idx, row in df.loc[staff_time_mask].iterrows():
+        key = (row["User"], row["Project"], row["Start_dt"], row["End_dt"])
+        lab = tool_lab_by_key.get(key)
+        if lab:
+            df.at[idx, "Lab"] = lab
+
+    return df
+
+
+def sort_invoice_detail_rows(df_lab: pd.DataFrame) -> pd.DataFrame:
+    if df_lab.empty:
+        return df_lab
+
+    sorted_df = df_lab.copy()
+    if "End_dt" not in sorted_df.columns:
+        sorted_df["End_dt"] = (
+            sorted_df["End time"].apply(parse_nemo_datetime)
+            if "End time" in sorted_df.columns
+            else None
+        )
+
+    sorted_df["_StaffTimeDetailSort"] = sorted_df["Item_norm"].apply(
+        lambda value: 1 if _is_staff_time_item(value) else 0
+    )
+    sorted_df["_OriginalDetailOrder"] = range(len(sorted_df))
+    sorted_df = sorted_df.sort_values(
+        [
+            "Start_dt",
+            "User",
+            "Project",
+            "End_dt",
+            "_StaffTimeDetailSort",
+            "Item_norm",
+            "_OriginalDetailOrder",
+        ],
+        kind="stable",
+    )
+    return sorted_df.drop(
+        columns=["_StaffTimeDetailSort", "_OriginalDetailOrder"],
+        errors="ignore",
+    )
+
+
 def has_invoiceable_activity(df_group: pd.DataFrame) -> bool:
     if df_group.empty:
         return False
@@ -1430,7 +1508,7 @@ def create_invoice_workbook(
         )
         current_row += 1
 
-        df_lab = df_lab.sort_values(["Start_dt", "User", "Item_norm", "Project"])
+        df_lab = sort_invoice_detail_rows(df_lab)
 
         detail_columns = [
             "Start_dt",
@@ -2023,7 +2101,7 @@ def create_invoice_pdf(
 
         story.append(P(lab, styleH))
 
-        df_lab = df_lab.sort_values(["Start_dt", "User", "Item_norm", "Project"])
+        df_lab = sort_invoice_detail_rows(df_lab)
 
         rows = [detail_col_names]
         for r in df_lab.itertuples(index=False):
@@ -2302,6 +2380,11 @@ def load_and_prepare(
         df = df[df["Application identifier"].isin(INVOICE_APPLICATION_IDENTIFIERS)].copy()
 
     df["Start_dt"] = df["Start time"].apply(parse_nemo_datetime)
+    df["End_dt"] = (
+        df["End time"].apply(parse_nemo_datetime)
+        if "End time" in df.columns
+        else None
+    )
     df["Item_norm"] = df["Item"].apply(normalize_item)
     df["IsConsumable"] = df["Type"].apply(_is_consumable_type)
     df["IsMissedReservation"] = df.apply(_row_contains_missed_reservation_text, axis=1)
@@ -2313,6 +2396,7 @@ def load_and_prepare(
         df["Lab"] = df["Lab"].fillna(df["Item_norm"].map(consumable_lab_map))
     df["Lab"] = df["Lab"].fillna("Unmapped")
     df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
+    df = apply_staff_time_lab_associations(df)
     df["Cost"] = pd.to_numeric(df["Cost"], errors="coerce").fillna(0.0).astype(float)
     df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").astype(float)
 
@@ -2324,6 +2408,11 @@ def load_and_prepare(
             projects_by_name=project_map or {},
         )
         df["Item_norm"] = df["Item"].apply(normalize_item)
+        df["End_dt"] = (
+            df["End time"].apply(parse_nemo_datetime)
+            if "End time" in df.columns
+            else None
+        )
         df["IsConsumable"] = df["Type"].apply(_is_consumable_type)
         df["IsMissedReservation"] = df.apply(_row_contains_missed_reservation_text, axis=1)
         df["IsStaffCharge"] = df.apply(_row_is_staff_charge, axis=1)
@@ -2333,6 +2422,7 @@ def load_and_prepare(
             df["Lab"] = df["Lab"].fillna(df["Item_norm"].map(consumable_lab_map))
         df["Lab"] = df["Lab"].fillna("Unmapped")
         df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
+        df = apply_staff_time_lab_associations(df)
 
     df["Period"] = df["Start_dt"].apply(period_from_start_dt)
     df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
