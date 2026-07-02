@@ -145,7 +145,9 @@ docker compose down
 - generate invoice ZIP files
 - optional PDF generation when `reportlab` is installed
 - missed reservation rows are excluded from generated invoice Excel/PDF detail lines
-- the PI contacts workbook includes a `Tool Users` sheet with each tool user, project number, and project type
+- tool usage rows with quantity less than or equal to 1 are excluded, except `Litho Hood 2`
+- matching `Staff time` rows are grouped after their tool row, and project summaries show a `Staff Time` breakout
+- the PI contacts workbook opens on `PI Project Totals` and includes a `Tool Users` sheet
 
 ### 3. Detailed Financial Report
 
@@ -160,6 +162,7 @@ docker compose down
 - upload a NEMO billing charges CSV
 - enter a NEMO API token
 - export a workbook listing each user, username, project number, project type, PI name, PI email, and billing period
+- includes a `PI Project Totals` sheet with each PI, project number, project type, and total amount
 - includes a summary sheet with row, user, project, and PI counts
 
 ### 5. Excel Invoice to PDF

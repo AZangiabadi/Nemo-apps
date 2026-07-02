@@ -30,6 +30,7 @@ from flask import (
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import build_usage_cap_report as cap_report_logic
 import nemo_invoice_generator_with_pdf as invoice_logic
 from excel_invoice_pdf_converter import convert_excel_invoice_to_pdf
 from nemo_invoice_generator_with_pdf import NEMO_BASE_URL, create_invoice_zip
@@ -105,6 +106,13 @@ APP_DEFINITIONS: list[AppDefinition] = [
         summary="Upload a billing charges CSV and export transaction-level financial details.",
         accent="#334155",
         details="Lists tool charges, consumables, staff charges, project types, PI emails, and before/after cap costs.",
+    ),
+    AppDefinition(
+        slug="usage-cap-analysis",
+        title="Usage Cap Analysis",
+        summary="Upload one or more usage CSVs and export income, hourly cap, project cap, and staff-charge analysis.",
+        accent="#7c3aed",
+        details="Creates the cap-analysis workbook with top 30 hourly-cap users and staff-charge totals.",
     ),
     AppDefinition(
         slug="user-pi-report",
@@ -1232,6 +1240,57 @@ def build_detailed_financial_report_page(
     return render_page("Detailed Financial Report", body)
 
 
+def build_usage_cap_analysis_page(
+    *,
+    error: str | None = None,
+    result: dict[str, object] | None = None,
+    download_url: str | None = None,
+) -> str:
+    message = ""
+    if error:
+        message = f'<div class="status error"><strong>Error</strong><pre>{html.escape(error)}</pre></div>'
+    if result:
+        download_link = (
+            f'<p><a class="button" href="{html.escape(download_url)}">Download Excel Workbook</a></p>'
+            if download_url
+            else ""
+        )
+        periods = ", ".join(str(period) for period in result.get("periods", []) or [])
+        message = f"""
+        <div class="status success">
+          <strong>Cap analysis ready</strong>
+          <div>
+            {int(result.get("source_file_count", 0) or 0)} source file(s),
+            {int(result.get("row_count", 0) or 0)} invoice-compatible row(s)
+            {f"for {html.escape(periods)}" if periods else ""}.
+          </div>
+          <div>Final total income: {invoice_logic._fmt_money(float(result.get("final_total_income", 0.0) or 0.0))}</div>
+          <div>Final total including Staff application: {invoice_logic._fmt_money(float(result.get("final_total_income_including_staff", 0.0) or 0.0))}</div>
+          {download_link}
+        </div>
+        """
+
+    body = f"""
+    <section class="panel accented" style="--accent:#7c3aed;">
+      <h2>Usage Cap Analysis</h2>
+      <p>Upload one or more NEMO usage CSVs and create an Excel workbook showing no-cap income, hourly-cap impact, project-cap impact, top 30 hourly-cap users, and staff-charge totals.</p>
+      <form action="/apps/usage-cap-analysis/run" method="post" enctype="multipart/form-data">
+        <div>
+          <label for="usage_csvs">Usage CSV Files</label>
+          <input id="usage_csvs" type="file" name="usage_csvs" accept=".csv" multiple required>
+          <div class="help">Select all months you want analyzed together. The workbook groups rows by parsed Start time, matching the invoice generator.</div>
+        </div>
+        <div class="actions">
+          <button type="submit">Build Cap Analysis</button>
+          <a class="button secondary" href="/">Back Home</a>
+        </div>
+      </form>
+      {message}
+    </section>
+    """
+    return render_page("Usage Cap Analysis", body)
+
+
 def build_user_pi_report(
     *,
     csv_path: Path,
@@ -1257,24 +1316,42 @@ def build_user_pi_report(
         raise ValueError("No billing charge rows found after filtering the CSV.")
 
     rows = []
+    project_total_rows = []
+    pi_info_by_project: dict[str, object] = {}
     for row in df.to_dict("records"):
         project = str(row.get("Project", "") or "").strip()
         if not project:
             continue
-        pi_info = invoice_logic.resolve_pi_for_project(project, project_map)
+        if project not in pi_info_by_project:
+            pi_info_by_project[project] = invoice_logic.resolve_pi_for_project(
+                project, project_map
+            )
+        pi_info = pi_info_by_project[project]
         user = str(row.get("User", "") or "").strip()
         username = str(row.get("Username", "") or "").strip()
         if not user and username:
             user = username
+        project_type = str(row.get("Application identifier", "")).strip()
+        pi_name = str(pi_info.display_name or "").strip()
+        pi_email = str(pi_info.email or "").strip()
         rows.append(
             {
                 "User": user,
                 "Username": username,
                 "Project Number": project,
-                "Project Type": str(row.get("Application identifier", "")).strip(),
-                "PI Name": str(pi_info.display_name or "").strip(),
-                "PI Email": str(pi_info.email or "").strip(),
+                "Project Type": project_type,
+                "PI Name": pi_name,
+                "PI Email": pi_email,
                 "Billing Period": str(row.get("Period", "") or "").strip(),
+            }
+        )
+        project_total_rows.append(
+            {
+                "PI Name": pi_name,
+                "PI Email": pi_email,
+                "Project Number": project,
+                "Project Type": project_type,
+                "Total Amount": row.get("Cost", 0.0),
             }
         )
 
@@ -1303,10 +1380,46 @@ def build_user_pi_report(
         )
         .reset_index(drop=True)
     )
+    project_totals_df = pd.DataFrame(
+        project_total_rows,
+        columns=[
+            "PI Name",
+            "PI Email",
+            "Project Number",
+            "Project Type",
+            "Total Amount",
+        ],
+    )
+    project_totals_df["Total Amount"] = pd.to_numeric(
+        project_totals_df["Total Amount"], errors="coerce"
+    ).fillna(0.0)
+    for column in ["PI Name", "PI Email", "Project Number", "Project Type"]:
+        project_totals_df[column] = (
+            project_totals_df[column].fillna("").astype(str).str.strip()
+        )
+    project_totals_df = (
+        project_totals_df.groupby(
+            ["PI Name", "PI Email", "Project Number", "Project Type"],
+            dropna=False,
+            as_index=False,
+        )["Total Amount"]
+        .sum()
+        .sort_values(
+            ["PI Name", "Project Number", "Project Type"],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        report_df.to_excel(writer, sheet_name="Users and PIs", index=False)
+        write_report_sheet(writer, "Users and PIs", report_df)
+        write_report_sheet(
+            writer,
+            "PI Project Totals",
+            project_totals_df,
+            currency_columns={"Total Amount"},
+        )
         summary_df = pd.DataFrame(
             [
                 {"Metric": "Rows", "Value": len(report_df)},
@@ -1318,7 +1431,7 @@ def build_user_pi_report(
                 {"Metric": "Unique PIs", "Value": report_df["PI Name"].nunique()},
             ]
         )
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        write_report_sheet(writer, "Summary", summary_df)
 
     return {
         "row_count": len(report_df),
@@ -2904,6 +3017,8 @@ def app_page(slug: str) -> str:
         return build_invoice_page()
     if slug == "detailed-financial-report":
         return build_detailed_financial_report_page()
+    if slug == "usage-cap-analysis":
+        return build_usage_cap_analysis_page()
     if slug == "user-pi-report":
         return build_user_pi_report_page()
     if slug == "excel-invoice-to-pdf":
@@ -3475,6 +3590,95 @@ def run_detailed_financial_report() -> str:
         shutil.rmtree(workdir, ignore_errors=True)
 
     return build_detailed_financial_report_page(
+        result=result,
+        download_url=f"/download/{job_id}/files/0",
+    )
+
+
+@app.post("/apps/usage-cap-analysis/run")
+def run_usage_cap_analysis() -> str:
+    uploaded_files = [
+        upload
+        for upload in request.files.getlist("usage_csvs")
+        if upload and upload.filename
+    ]
+
+    if not uploaded_files:
+        return build_usage_cap_analysis_page(
+            error="Choose at least one usage CSV to upload."
+        )
+
+    job_id = str(uuid.uuid4())
+    created_at = datetime.now().astimezone()
+    workdir = tempfile.mkdtemp(prefix=f"usage_cap_analysis_{job_id}_")
+    output_dir = ensure_generated_invoices_dir() / created_at.strftime("%Y-%m-%d") / job_id
+    output_path = output_dir / f"usage_cap_analysis_{created_at.date().isoformat()}.xlsx"
+
+    try:
+        saved_inputs: list[tuple[Path, str]] = []
+        source_filenames: list[str] = []
+        for index, upload in enumerate(uploaded_files, start=1):
+            saved_path = save_upload(
+                upload,
+                allowed_suffixes=ALLOWED_INVOICE_SUFFIXES,
+                folder=workdir,
+            )
+            source_name = Path(upload.filename or f"Usage CSV {index}").stem
+            saved_inputs.append((saved_path, source_name or f"Usage CSV {index}"))
+            source_filenames.append(upload.filename or saved_path.name)
+
+        result = cap_report_logic.build_usage_cap_report(
+            saved_inputs,
+            output_path,
+        )
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "created_at": iso_timestamp(created_at),
+                    "source_filenames": source_filenames,
+                    "output_file_paths": [str(output_path)],
+                    "selected_options": {
+                        "source": "usage_cap_analysis",
+                        "top_hourly_cap_rows": 30,
+                        "include_staff_application_charges": True,
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        set_job(
+            job_id,
+            {
+                "status": "completed",
+                "title": "Usage cap analysis ready",
+                "summary": "The usage cap analysis workbook was exported.",
+                "current": 1,
+                "total": 1,
+                "log": "Usage cap analysis generated.",
+                "log_lines": ["Usage cap analysis generated."],
+                "zip_path": None,
+                "files": [str(output_path)],
+                "workdir": str(output_dir),
+                "file_downloads": [
+                    {"label": output_path.name, "url": f"/download/{job_id}/files/0"}
+                ],
+                "zip_download_url": None,
+                "started_at": iso_timestamp(created_at),
+                "timer_started_at": iso_timestamp(created_at),
+                "links_ready_at": iso_timestamp(),
+            },
+        )
+    except Exception as exc:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        error_text = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+        return build_usage_cap_analysis_page(error=error_text)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return build_usage_cap_analysis_page(
         result=result,
         download_url=f"/download/{job_id}/files/0",
     )

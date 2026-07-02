@@ -556,6 +556,47 @@ def _is_staff_time_item(value: object) -> bool:
     return normalize_item(value).strip().lower() == "staff time"
 
 
+def _is_litho_hood_2_item(value: object) -> bool:
+    return normalize_item(value).strip().lower() == "litho hood 2"
+
+
+def filter_invoice_usage_quantity_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Exclude tiny tool-usage rows from generated invoices.
+
+    Litho Hood 2 is explicitly exempt, so every Litho Hood 2 usage row remains
+    invoiceable regardless of quantity.
+    """
+    if df.empty or "Quantity" not in df.columns:
+        return df
+
+    type_text = (
+        df.get("Type", pd.Series("", index=df.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    item_values = df.get("Item_norm", df.get("Item", pd.Series("", index=df.index)))
+    quantity = pd.to_numeric(df["Quantity"], errors="coerce")
+
+    short_tool_usage = (
+        type_text.eq("tool_usage")
+        & quantity.notna()
+        & quantity.le(1)
+        & ~item_values.apply(_is_litho_hood_2_item)
+    )
+    if not short_tool_usage.any():
+        return df
+    return df.loc[~short_tool_usage].copy()
+
+
+def route_consumables_to_consumable_lab(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "IsConsumable" not in df.columns or "Lab" not in df.columns:
+        return df
+    df.loc[df["IsConsumable"].fillna(False).astype(bool), "Lab"] = "Consumable"
+    return df
+
+
 def apply_staff_time_lab_associations(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "End_dt" not in df.columns:
         return df
@@ -577,9 +618,9 @@ def apply_staff_time_lab_associations(df: pd.DataFrame) -> pd.DataFrame:
     if not candidate_mask.any():
         return df
 
-    tool_lab_by_key: dict[tuple[object, object, object, object], str] = {}
+    tool_lab_by_key: dict[tuple[object, object, object], str] = {}
     for _, row in df.loc[candidate_mask].sort_index(kind="stable").iterrows():
-        key = (row["User"], row["Project"], row["Start_dt"], row["End_dt"])
+        key = (row["User"], row["Project"], row["Start_dt"])
         lab = str(row.get("Lab") or "").strip()
         if lab:
             tool_lab_by_key.setdefault(key, lab)
@@ -588,7 +629,7 @@ def apply_staff_time_lab_associations(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     for idx, row in df.loc[staff_time_mask].iterrows():
-        key = (row["User"], row["Project"], row["Start_dt"], row["End_dt"])
+        key = (row["User"], row["Project"], row["Start_dt"])
         lab = tool_lab_by_key.get(key)
         if lab:
             df.at[idx, "Lab"] = lab
@@ -617,8 +658,8 @@ def sort_invoice_detail_rows(df_lab: pd.DataFrame) -> pd.DataFrame:
             "Start_dt",
             "User",
             "Project",
-            "End_dt",
             "_StaffTimeDetailSort",
+            "End_dt",
             "Item_norm",
             "_OriginalDetailOrder",
         ],
@@ -1548,6 +1589,10 @@ def create_invoice_workbook(
                     f"${cost_col_letter}${detail_data_start_row}:"
                     f"${cost_col_letter}${detail_data_end_row}"
                 ),
+                "description_range": (
+                    f"$C${detail_data_start_row}:"
+                    f"$C${detail_data_end_row}"
+                ),
             }
         )
 
@@ -1637,8 +1682,16 @@ def create_invoice_workbook(
             .sum()
             .reset_index(name="Consumable")
         )
+        proj_staff_time = (
+            df_group[df_group["Item_norm"].apply(_is_staff_time_item)]
+            .groupby(["Project", "Application identifier"], dropna=False)["Cost"]
+            .sum()
+            .reset_index(name="Staff Time")
+        )
         proj = proj_usage.merge(
             proj_consumables, on=["Project", "Application identifier"], how="outer"
+        ).merge(
+            proj_staff_time, on=["Project", "Application identifier"], how="outer"
         ).fillna(0.0)
 
         for lab in ("Cleanroom", "SMCL", "Electron Microscopy Lab"):
@@ -1646,6 +1699,8 @@ def create_invoice_workbook(
                 proj[lab] = 0.0
         if "Consumable" not in proj.columns:
             proj["Consumable"] = 0.0
+        if "Staff Time" not in proj.columns:
+            proj["Staff Time"] = 0.0
 
         proj["Access Fee"] = 0.0
         if access_fee_project is not None:
@@ -1665,7 +1720,7 @@ def create_invoice_workbook(
         proj_cols = (
             ["Project", "Project Type"]
             + list(DESIRED_LAB_ORDER)
-            + ["Access Fee", "Project Total"]
+            + ["Staff Time", "Access Fee", "Project Total"]
         )
         proj = proj[proj_cols].sort_values(
             ["Project Total", "Project"], ascending=[False, True]
@@ -1678,7 +1733,8 @@ def create_invoice_workbook(
             current_row,
             1,
             proj,
-            currency_cols=list(DESIRED_LAB_ORDER) + ["Access Fee", "Project Total"],
+            currency_cols=list(DESIRED_LAB_ORDER)
+            + ["Staff Time", "Access Fee", "Project Total"],
         )
         project_summary_last_row = current_row - 1
 
@@ -1687,6 +1743,7 @@ def create_invoice_workbook(
             lab: proj_cols.index(lab) + 1 for lab in DESIRED_LAB_ORDER
         }
         access_fee_col = proj_cols.index("Access Fee") + 1
+        staff_time_col = proj_cols.index("Staff Time") + 1
         project_total_col = proj_cols.index("Project Total") + 1
 
         for row_idx in range(project_summary_first_row, project_summary_last_row + 1):
@@ -1702,6 +1759,20 @@ def create_invoice_workbook(
                 ]
                 formula = "=" + "+".join(terms) if terms else "=0"
                 ws.cell(row_idx, lab_col_by_name[lab], value=formula)
+
+            staff_time_terms = [
+                (
+                    f'SUMIFS({section["cost_range"]},'
+                    f'{section["project_range"]},{project_cell},'
+                    f'{section["description_range"]},"Staff time")'
+                )
+                for section in detail_sections
+            ]
+            staff_time_cell = ws.cell(row_idx, staff_time_col)
+            staff_time_cell.value = (
+                "=" + "+".join(staff_time_terms) if staff_time_terms else "=0"
+            )
+            staff_time_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
 
             access_fee_cell = ws.cell(row_idx, access_fee_col)
             if access_fee_detail_cell:
@@ -1719,7 +1790,8 @@ def create_invoice_workbook(
             access_fee_col_letter = get_column_letter(access_fee_col)
             project_total_cell = ws.cell(row_idx, project_total_col)
             project_total_cell.value = (
-                f"=SUM({first_lab_col}{row_idx}:{access_fee_col_letter}{row_idx})"
+                f"=SUM({first_lab_col}{row_idx}:{last_lab_col}{row_idx})"
+                f"+{access_fee_col_letter}{row_idx}"
             )
             project_total_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
 
@@ -2235,8 +2307,20 @@ def create_invoice_pdf(
         proj_consumables = pd.DataFrame(
             columns=["Project", "Application identifier", "Consumable"]
         )
+    proj_staff_time = (
+        df_group[df_group["Item_norm"].apply(_is_staff_time_item)]
+        .groupby(["Project", "Application identifier"], dropna=False)["Cost"]
+        .sum()
+        .reset_index(name="Staff Time")
+    )
+    if "Project" not in proj_staff_time.columns:
+        proj_staff_time = pd.DataFrame(
+            columns=["Project", "Application identifier", "Staff Time"]
+        )
     proj = proj_usage.merge(
         proj_consumables, on=["Project", "Application identifier"], how="outer"
+    ).merge(
+        proj_staff_time, on=["Project", "Application identifier"], how="outer"
     ).fillna(0.0)
 
     for lab in ("Cleanroom", "SMCL", "Electron Microscopy Lab"):
@@ -2244,6 +2328,8 @@ def create_invoice_pdf(
             proj[lab] = 0.0
     if "Consumable" not in proj.columns:
         proj["Consumable"] = 0.0
+    if "Staff Time" not in proj.columns:
+        proj["Staff Time"] = 0.0
     proj["Access Fee"] = 0.0
     if access_fee_project is not None:
         fee_mask = (proj["Project"] == access_fee_project["Project"]) & (
@@ -2259,7 +2345,7 @@ def create_invoice_pdf(
     proj_cols = (
         ["Project", "Application identifier"]
         + list(DESIRED_LAB_ORDER)
-        + ["Access Fee", "Project Total"]
+        + ["Staff Time", "Access Fee", "Project Total"]
     )
     proj = proj[proj_cols].sort_values(
         ["Project Total", "Project"], ascending=[False, True]
@@ -2272,15 +2358,17 @@ def create_invoice_pdf(
     ]
     for lab in DESIRED_LAB_ORDER:
         proj_header.append(Paragraph(lab, styleSmallBold))
+    proj_header.append(Paragraph("Staff Time", styleSmallBold))
     proj_header.append(Paragraph("Access Fee", styleSmallBold))
     proj_header.append(Paragraph("Project Total", styleSmallBold))
     proj_rows = [proj_header]
     for r in proj.itertuples(index=False):
-        # r = Project, Application identifier, labs..., Project Total
+        # r = Project, Application identifier, labs..., Staff Time, Access Fee, Project Total
         vals = list(r)
         project_name = str(vals[0] or "")
         app_id = str(vals[1] or "")
-        lab_costs = vals[2:-2]
+        lab_costs = vals[2 : 2 + len(DESIRED_LAB_ORDER)]
+        staff_time = vals[-3]
         access_fee = vals[-2]
         ptotal = vals[-1]
 
@@ -2289,6 +2377,7 @@ def create_invoice_pdf(
                 P(project_name, styleSmall),
                 P(app_id, styleSmall),
                 *[P(_fmt_money(v), styleSmall) for v in lab_costs],
+                P(_fmt_money(staff_time), styleSmall),
                 P(_fmt_money(access_fee), styleSmall),
                 P(_fmt_money(ptotal), styleSmall),
             ]
@@ -2296,8 +2385,9 @@ def create_invoice_pdf(
 
     # Column widths for project summary (landscape)
     # Column widths for project summary (landscape) as fractions of doc.width.
-    # Columns: Project, Account Type, Cleanroom, SMCL, Electron Microscopy Lab, Consumable, Access Fee, Project Total
-    proj_fracs = [0.36, 0.09, 0.09, 0.07, 0.11, 0.09, 0.09, 0.10]
+    # Columns: Project, Account Type, Cleanroom, SMCL, Electron Microscopy Lab,
+    # Consumable, Staff Time, Access Fee, Project Total
+    proj_fracs = [0.31, 0.08, 0.08, 0.07, 0.10, 0.095, 0.075, 0.09, 0.10]
     proj_col_widths = [doc.width * f for f in proj_fracs]
     # If labs order changes, widths might not match; guard
     if len(proj_col_widths) != len(proj_header):
@@ -2356,6 +2446,7 @@ def load_and_prepare(
     project_map: Optional[Dict[str, dict[str, Any]]] = None,
     adjustment_requests: Optional[list[dict[str, Any]]] = None,
     filter_application_identifiers: bool = True,
+    filter_invoice_quantities: bool = False,
 ) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
 
@@ -2397,6 +2488,7 @@ def load_and_prepare(
     df["Lab"] = df["Lab"].fillna("Unmapped")
     df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
     df = apply_staff_time_lab_associations(df)
+    df = route_consumables_to_consumable_lab(df)
     df["Cost"] = pd.to_numeric(df["Cost"], errors="coerce").fillna(0.0).astype(float)
     df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").astype(float)
 
@@ -2423,6 +2515,10 @@ def load_and_prepare(
         df["Lab"] = df["Lab"].fillna("Unmapped")
         df["Lab"] = df["Lab"].map(LAB_NAME_MAP).fillna(df["Lab"])
         df = apply_staff_time_lab_associations(df)
+        df = route_consumables_to_consumable_lab(df)
+
+    if filter_invoice_quantities:
+        df = filter_invoice_usage_quantity_rows(df)
 
     df["Period"] = df["Start_dt"].apply(period_from_start_dt)
     df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
@@ -2529,6 +2625,7 @@ def generate_invoices(
         tools_by_id=tools_by_id,
         project_map=project_map,
         adjustment_requests=adjustment_requests,
+        filter_invoice_quantities=True,
     )
     df = df[~df["IsMissedReservation"].fillna(False)].copy()
     if df.empty:
@@ -2668,38 +2765,33 @@ def create_pi_contact_report(outdir: str, df: pd.DataFrame) -> str:
             f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
         )
 
-    report_df = (
-        df.loc[:, ["PI_display_name", "PI_email", "Period"]]
-        .copy()
-        .rename(
-            columns={
-                "PI_display_name": "PI Name",
-                "PI_email": "PI Email",
-                "Period": "Billing Period",
-            }
-        )
-    )
-    report_df["PI Name"] = report_df["PI Name"].fillna("").astype(str).str.strip()
-    report_df["PI Email"] = report_df["PI Email"].fillna("").astype(str).str.strip()
-    report_df["Billing Period"] = (
-        report_df["Billing Period"].fillna("").astype(str).str.strip()
-    )
-    report_df = report_df.drop_duplicates().sort_values(
-        by=["PI Name", "Billing Period", "PI Email"], kind="stable"
-    )
-
     workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "PI Contacts"
-    worksheet.append(["PI Name", "PI Email", "Billing Period"])
+    project_totals = build_pi_project_totals_report(df)
+    project_totals_sheet = workbook.active
+    project_totals_sheet.title = "PI Project Totals"
+    project_totals_sheet.append(
+        [
+            "PI Name",
+            "PI Email",
+            "Billing Period",
+            "Project Number",
+            "Project Type",
+            "Usage Amount",
+            "Access Fee",
+            "Total Amount",
+        ]
+    )
+    for row in project_totals.itertuples(index=False):
+        project_totals_sheet.append(list(row))
 
-    for row in report_df.itertuples(index=False):
-        worksheet.append(list(row))
+    for row in project_totals_sheet.iter_rows(min_row=2):
+        for cell in row[5:8]:
+            cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
 
-    for column_cells in worksheet.columns:
+    for column_cells in project_totals_sheet.columns:
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
-        worksheet.column_dimensions[column_cells[0].column_letter].width = min(
-            max(max_length + 2, 14), 48
+        project_totals_sheet.column_dimensions[column_cells[0].column_letter].width = min(
+            max(max_length + 2, 14), 56
         )
 
     tool_users = build_tool_user_project_report(df)
@@ -2721,6 +2813,101 @@ def create_pi_contact_report(outdir: str, df: pd.DataFrame) -> str:
     except Exception:
         pass
     return output_path
+
+
+def build_pi_project_totals_report(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "PI Name",
+        "PI Email",
+        "Billing Period",
+        "Project Number",
+        "Project Type",
+        "Usage Amount",
+        "Access Fee",
+        "Total Amount",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    required = [
+        "PI_key",
+        "PI_display_name",
+        "PI_email",
+        "Period",
+        "Project",
+        "Application identifier",
+        "Cost",
+    ]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        return pd.DataFrame(columns=columns)
+
+    report_source = df.loc[:, required].copy()
+    report_source["Cost"] = pd.to_numeric(
+        report_source["Cost"], errors="coerce"
+    ).fillna(0.0)
+
+    project_totals = (
+        report_source.groupby(
+            [
+                "PI_display_name",
+                "PI_key",
+                "PI_email",
+                "Period",
+                "Project",
+                "Application identifier",
+            ],
+            dropna=False,
+            as_index=False,
+        )["Cost"]
+        .sum()
+        .rename(columns={"Cost": "Usage Amount"})
+    )
+    project_totals["Access Fee"] = 0.0
+
+    for (_, period), group in df.groupby(["PI_key", "Period"], dropna=False, sort=False):
+        access_fee = internal_facility_fee_for_group(group)
+        if access_fee <= 0:
+            continue
+        access_fee_project = select_access_fee_project(group)
+        if access_fee_project is None:
+            continue
+        mask = (
+            project_totals["PI_key"].eq(group["PI_key"].iloc[0])
+            & project_totals["Period"].eq(period)
+            & project_totals["Project"].eq(access_fee_project["Project"])
+            & project_totals["Application identifier"].eq(
+                access_fee_project["Application identifier"]
+            )
+        )
+        project_totals.loc[mask, "Access Fee"] += access_fee
+
+    project_totals["Total Amount"] = (
+        project_totals["Usage Amount"] + project_totals["Access Fee"]
+    )
+    project_totals = project_totals.rename(
+        columns={
+            "PI_display_name": "PI Name",
+            "PI_email": "PI Email",
+            "Period": "Billing Period",
+            "Project": "Project Number",
+            "Application identifier": "Project Type",
+        }
+    )
+    for column in ["PI Name", "PI Email", "Billing Period", "Project Number", "Project Type"]:
+        project_totals[column] = (
+            project_totals[column].fillna("").astype(str).str.strip()
+        )
+
+    return (
+        project_totals.loc[:, columns]
+        .sort_values(
+            ["PI Name", "Billing Period", "Total Amount", "Project Number"],
+            ascending=[True, True, False, True],
+            kind="stable",
+        )
+        .reset_index(drop=True)
+    )
 
 
 def build_tool_user_project_report(df: pd.DataFrame) -> pd.DataFrame:
