@@ -146,7 +146,7 @@ docker compose down
 - optional PDF generation when `reportlab` is installed
 - missed reservation rows are excluded from generated invoice Excel/PDF detail lines
 - tool usage rows with quantity less than or equal to 1 are excluded, except `Litho Hood 2`
-- matching `Staff time` rows are grouped after their tool row, and project summaries show a `Staff Time` breakout
+- matching `Staff time` rows are grouped after their tool row; unmatched rows use a `Staff time` table, with a project-summary breakout
 - the PI contacts workbook opens on `PI Project Totals` and includes a `Tool Users` sheet
 
 ### 3. Detailed Financial Report

@@ -246,6 +246,7 @@ LAB_NAME_MAP = {
 }
 
 DESIRED_LAB_ORDER = ["Cleanroom", "SMCL", "Electron Microscopy Lab", "Consumable"]
+DETAIL_SECTION_ORDER = DESIRED_LAB_ORDER + ["Staff time"]
 
 # Max billable hours per session, sourced from "Tool Rates.xlsx" Sheet2.
 TOOL_MAX_HOURS_BY_TOOL_ID = {
@@ -608,6 +609,8 @@ def apply_staff_time_lab_associations(df: pd.DataFrame) -> pd.DataFrame:
     staff_time_mask = df["Item_norm"].apply(_is_staff_time_item)
     if not staff_time_mask.any():
         return df
+
+    df.loc[staff_time_mask, "Lab"] = "Staff time"
 
     candidate_mask = (
         ~staff_time_mask
@@ -1533,7 +1536,7 @@ def create_invoice_workbook(
     lab_subtotal_cells: Dict[str, str] = {}
     detail_sections: List[dict[str, object]] = []
 
-    for lab in DESIRED_LAB_ORDER:
+    for lab in DETAIL_SECTION_ORDER:
         df_lab = df_group[df_group["Lab"] == lab].copy()
         if df_lab.empty:
             continue
@@ -1665,8 +1668,9 @@ def create_invoice_workbook(
         )
         current_row += 1
 
+        staff_time_mask = df_group["Item_norm"].apply(_is_staff_time_item)
         proj_usage = (
-            df_group[~df_group["IsConsumable"]]
+            df_group[~df_group["IsConsumable"] & ~staff_time_mask]
             .pivot_table(
                 index=["Project", "Application identifier"],
                 columns="Lab",
@@ -1713,6 +1717,7 @@ def create_invoice_workbook(
             proj[["Cleanroom", "SMCL", "Electron Microscopy Lab", "Consumable"]].sum(
                 axis=1
             )
+            + proj["Staff Time"]
             + proj["Access Fee"]
         )
         proj = proj.rename(columns={"Application identifier": "Project Type"})
@@ -1752,7 +1757,8 @@ def create_invoice_workbook(
                 terms = [
                     (
                         f'SUMIFS({section["cost_range"]},'
-                        f'{section["project_range"]},{project_cell})'
+                        f'{section["project_range"]},{project_cell},'
+                        f'{section["description_range"]},"<>Staff time")'
                     )
                     for section in detail_sections
                     if section["lab"] == lab
@@ -1791,6 +1797,7 @@ def create_invoice_workbook(
             project_total_cell = ws.cell(row_idx, project_total_col)
             project_total_cell.value = (
                 f"=SUM({first_lab_col}{row_idx}:{last_lab_col}{row_idx})"
+                f"+{get_column_letter(staff_time_col)}{row_idx}"
                 f"+{access_fee_col_letter}{row_idx}"
             )
             project_total_cell.number_format = numbers.FORMAT_CURRENCY_USD_SIMPLE
@@ -1810,6 +1817,8 @@ def create_invoice_workbook(
             value=(
                 f"=SUM({first_lab_col}{project_summary_first_row}:"
                 f"{last_lab_col}{project_summary_last_row})"
+                f"+SUM({get_column_letter(staff_time_col)}{project_summary_first_row}:"
+                f"{get_column_letter(staff_time_col)}{project_summary_last_row})"
             ),
         )
         tot_cell.font = _BOLD
@@ -2166,7 +2175,7 @@ def create_invoice_pdf(
     detail_col_names.append("Cost")
     col_widths = [doc.width * f for f in detail_fracs]
 
-    for lab in DESIRED_LAB_ORDER:
+    for lab in DETAIL_SECTION_ORDER:
         df_lab = df_group[df_group["Lab"] == lab].copy()
         if df_lab.empty:
             continue
@@ -2284,8 +2293,9 @@ def create_invoice_pdf(
     # Project fees summary
     story.append(P("Project fees summary", styleH))
 
+    staff_time_mask = df_group["Item_norm"].apply(_is_staff_time_item)
     proj_usage = (
-        df_group[~df_group["IsConsumable"]]
+        df_group[~df_group["IsConsumable"] & ~staff_time_mask]
         .pivot_table(
             index=["Project", "Application identifier"],
             columns="Lab",
@@ -2339,6 +2349,7 @@ def create_invoice_pdf(
         proj.loc[fee_mask, "Access Fee"] = internal_fee
     proj["Project Total"] = (
         proj[["Cleanroom", "SMCL", "Electron Microscopy Lab", "Consumable"]].sum(axis=1)
+        + proj["Staff Time"]
         + proj["Access Fee"]
     )
 
