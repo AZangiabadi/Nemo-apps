@@ -1019,15 +1019,49 @@ def safe_filename(s: str) -> str:
     return s or "UNKNOWN_PI"
 
 
-def make_invoice_number(period_ym: str, seq: int = 1) -> str:
+def invoice_run_timestamp_code(value: Optional[dt.datetime] = None) -> str:
+    """Return a run timestamp code as DDHHMM in the invoice timezone."""
+    current = value or invoice_generated_at()
+    return current.strftime("%d%H%M")
+
+
+def make_invoice_number(
+    period_ym: str,
+    seq: int = 1,
+    run_timestamp_code: Optional[str] = None,
+) -> str:
     """
-    Stable invoice number format: CNI-YYMM-SEQ
-    Example: CNI-2603-001
+    Invoice number format: CNI-YYMM-DDHHMM-SEQ
+    Example: CNI-2603-111432-001
     """
     period_code = str(period_ym or "").replace("-", "")
     if len(period_code) == 6:
         period_code = period_code[2:]
-    return f"CNI-{period_code}-{int(seq):03d}"
+    timestamp_code = run_timestamp_code or invoice_run_timestamp_code()
+    return f"CNI-{period_code}-{timestamp_code}-{int(seq):03d}"
+
+
+def unique_invoice_file_stem(
+    outdir: str,
+    base_stem: str,
+    used_stems: set[str],
+) -> str:
+    """
+    Return a unique invoice file stem, appending _1, _2, etc. when needed.
+    This prevents separate invoices for the same PI display name/month from
+    overwriting each other.
+    """
+    suffix = 0
+    candidate = base_stem
+    while (
+        candidate in used_stems
+        or os.path.exists(os.path.join(outdir, f"{candidate}.xlsx"))
+        or os.path.exists(os.path.join(outdir, f"{candidate}.pdf"))
+    ):
+        suffix += 1
+        candidate = f"{base_stem}_{suffix}"
+    used_stems.add(candidate)
+    return candidate
 
 
 # -----------------------------
@@ -2458,6 +2492,7 @@ def load_and_prepare(
     adjustment_requests: Optional[list[dict[str, Any]]] = None,
     filter_application_identifiers: bool = True,
     filter_invoice_quantities: bool = False,
+    apply_hourly_caps: bool = True,
 ) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
 
@@ -2533,7 +2568,8 @@ def load_and_prepare(
 
     df["Period"] = df["Start_dt"].apply(period_from_start_dt)
     df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
-    df = apply_max_session_charge_caps(df)
+    if apply_hourly_caps:
+        df = apply_max_session_charge_caps(df)
     df = apply_project_charge_caps(df)
     df["Subsidy"] = 0.0
     cdg_mask = df["Application identifier"].str.upper().eq("CDG")
@@ -2562,6 +2598,7 @@ def generate_invoices(
     generate_pdf: bool = True,
     logo_path: Optional[str] = None,
     use_cache: bool = True,
+    apply_hourly_caps: bool = True,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, int, pd.DataFrame, List[str]]:
@@ -2637,6 +2674,7 @@ def generate_invoices(
         project_map=project_map,
         adjustment_requests=adjustment_requests,
         filter_invoice_quantities=True,
+        apply_hourly_caps=apply_hourly_caps,
     )
     df = df[~df["IsMissedReservation"].fillna(False)].copy()
     if df.empty:
@@ -2657,6 +2695,8 @@ def generate_invoices(
     xlsx_created = 0
     pdf_created = 0
     generated_paths: List[str] = []
+    run_timestamp_code = invoice_run_timestamp_code()
+    used_invoice_file_stems: set[str] = set()
 
     month_sequence: Dict[str, int] = {}
     grouped_items = [
@@ -2690,10 +2730,19 @@ def generate_invoices(
         pi_email = nonempty_emails.iloc[0] if not nonempty_emails.empty else ""
         period_key = str(period)
         month_sequence[period_key] = month_sequence.get(period_key, 0) + 1
-        invoice_number = make_invoice_number(period_key, seq=month_sequence[period_key])
+        invoice_number = make_invoice_number(
+            period_key,
+            seq=month_sequence[period_key],
+            run_timestamp_code=run_timestamp_code,
+        )
 
         filename_safe = safe_filename(pi_name)
         period_label = month_label(period)
+        invoice_file_stem = unique_invoice_file_stem(
+            outdir,
+            f"{filename_safe} {period_label}",
+            used_invoice_file_stems,
+        )
 
         if generate_excel:
             if status_callback:
@@ -2705,7 +2754,7 @@ def generate_invoices(
                 invoice_number=invoice_number,
                 pi_email=pi_email,
             )
-            xlsx_path = os.path.join(outdir, f"{filename_safe} {period_label}.xlsx")
+            xlsx_path = os.path.join(outdir, f"{invoice_file_stem}.xlsx")
             wb.save(xlsx_path)
             generated_paths.append(xlsx_path)
             xlsx_created += 1
@@ -2722,7 +2771,7 @@ def generate_invoices(
                     file=sys.stderr,
                 )
             else:
-                pdf_path = os.path.join(outdir, f"{filename_safe} {period_label}.pdf")
+                pdf_path = os.path.join(outdir, f"{invoice_file_stem}.pdf")
                 try:
                     if status_callback:
                         status_callback(f"Building PDF for {pi_name} {period_label}")

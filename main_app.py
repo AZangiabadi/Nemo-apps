@@ -848,6 +848,10 @@ def build_invoice_page(
           <label><input type="checkbox" name="bypass_cache" checked> Bypass cache and use live API data</label>
           <div class="help">Check this to force fresh NEMO project and consumable metadata instead of recent cached API results.</div>
         </div>
+        <div>
+          <label><input type="checkbox" name="apply_hourly_caps"> Apply hourly/session caps</label>
+          <div class="help">Leave unchecked to ignore hourly/session caps. Project caps still apply.</div>
+        </div>
         <div class="actions">
           <button type="submit">Generate Invoices</button>
           <a class="button secondary" href="/">Back Home</a>
@@ -3190,6 +3194,7 @@ def run_invoice_generator() -> str:
     generate_pdf = request.form.get("generate_pdf") == "on"
     make_zip = request.form.get("make_zip") == "on"
     bypass_cache = request.form.get("bypass_cache") == "on"
+    apply_hourly_caps = request.form.get("apply_hourly_caps") == "on"
 
     if not api_token:
         return build_invoice_page(error="API token is required.")
@@ -3234,6 +3239,7 @@ def run_invoice_generator() -> str:
             "timer_started_at": None,
             "links_ready_at": None,
             "cache_mode": "Live API" if bypass_cache else "Cached API",
+            "hourly_cap_mode": "Applied" if apply_hourly_caps else "Ignored",
         },
     )
 
@@ -3245,6 +3251,14 @@ def run_invoice_generator() -> str:
             update_job(
                 job_id,
                 timer_started_at=iso_timestamp(),
+            )
+            append_job_log(
+                job_id,
+                (
+                    "Hourly/session caps will be applied."
+                    if apply_hourly_caps
+                    else "Hourly/session caps will be ignored."
+                ),
             )
 
             def on_status(message: str) -> None:
@@ -3292,6 +3306,7 @@ def run_invoice_generator() -> str:
                     generate_pdf=generate_pdf,
                     logo_path=logo_path,
                     use_cache=not bypass_cache,
+                    apply_hourly_caps=apply_hourly_caps,
                     progress_callback=on_progress,
                     status_callback=on_status,
                 )
