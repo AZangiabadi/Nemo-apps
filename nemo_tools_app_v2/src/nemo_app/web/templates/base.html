@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NEMO Tools Hub{% endblock %}</title>
+  <link rel="icon" type="image/jpeg" href="{{ url_for('core.asset', name='nemo-logo') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <div class="shell {% block shell_class %}{% endblock %}">
+    {% block site_header %}
+    <header class="site-header">
+      <a class="brand" href="{{ url_for('core.home') }}">
+        <img src="{{ url_for('core.asset', name='columbia-logo') }}" alt="Columbia Nano Initiative">
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="{{ url_for('core.home') }}">Home</a>
+        {% for tool in tools %}<a href="{{ tool.href }}">{{ tool.title }}</a>{% endfor %}
+        {% if session.get('authenticated') %}
+          <form class="nav-form" method="post" action="{{ url_for('auth.logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="nav-button" type="submit">Sign out</button>
+          </form>
+        {% endif %}
+      </nav>
+    </header>
+    {% endblock %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="status {{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    <main>{% block content %}{% endblock %}</main>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

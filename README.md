@@ -2,6 +2,23 @@
 
 Internal Columbia Nano Initiative web app for launching NEMO-related tools from one place.
 
+## Active Development
+
+The actively maintained version of the app now lives in `nemo_tools_app_v2/`.
+The original root-level Flask app remains in this repository as the legacy v1
+implementation and is tagged as `legacy-v1-before-v2` for reference.
+
+For new work, start in:
+
+```bash
+cd nemo_tools_app_v2
+```
+
+See `nemo_tools_app_v2/README.md` for v2 setup, development, and deployment
+instructions.
+
+## Legacy V1
+
 Current apps:
 - `User/Account/Project Batch Import From Excel`
 - `NEMO Invoice Generator`

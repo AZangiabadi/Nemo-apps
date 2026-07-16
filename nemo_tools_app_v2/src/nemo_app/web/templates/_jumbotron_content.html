@@ -1,0 +1,22 @@
+<section class="panel accented" style="--accent:#1d4ed8">
+  <h1>Live NEMO Activity</h1>
+  <p>Updated {{ report.generated_at }}</p>
+  <div class="stats">
+    <div><strong>{{ report.current_usage|length }}</strong><span>In use now</span></div>
+    <div><strong>{{ report.upcoming|length }}</strong><span>Upcoming</span></div>
+    <div><strong>{{ report.cancellations|length }}</strong><span>Today's cancellations</span></div>
+  </div>
+</section>
+{% for title, columns, rows in [
+  ('Currently In Use', ('Username','Tool','Started'), report.current_usage),
+  ('Upcoming Reservations', ('Day','Username','Tool','Start','End'), report.upcoming),
+  ("Today's Cancellations", ('Username','Tool','Type','Reservation Start','Cancelled At'), report.cancellations)
+] %}
+<section class="panel">
+  <h2>{{ title }}</h2>
+  {% if rows %}
+  <div class="table-wrap"><table><thead><tr>{% for column in columns %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+  <tbody>{% for row in rows %}<tr>{% for value in row %}<td>{{ value }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="status info">No matching records.</p>{% endif %}
+</section>
+{% endfor %}

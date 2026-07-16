@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">Exports</p><h1>NEMO Reports</h1><p>Each report runs as a durable background job.</p></section>
+<section class="grid report-grid">
+  <article class="card">
+    <h2>Detailed Financials</h2>
+    <form method="post" action="{{ url_for('reports.detailed_submit') }}" enctype="multipart/form-data">
+      {{ csrf() }}
+      <label>API token<input type="password" name="api_token" required></label>
+      <label>Billing CSV<input type="file" name="csv_file" accept=".csv" required></label>
+      <label class="choice"><input type="checkbox" name="bypass_cache" checked> Fetch live metadata</label>
+      <button>Build workbook</button>
+    </form>
+  </article>
+  <article class="card">
+    <h2>Usage Cap Analysis</h2>
+    <form method="post" action="{{ url_for('reports.usage_caps_submit') }}" enctype="multipart/form-data">
+      {{ csrf() }}
+      <label>Usage CSV files<input type="file" name="usage_csvs" accept=".csv" multiple required></label>
+      <button>Build workbook</button>
+    </form>
+  </article>
+  <article class="card">
+    <h2>User PI Report</h2>
+    <form method="post" action="{{ url_for('reports.user_pi_submit') }}" enctype="multipart/form-data">
+      {{ csrf() }}
+      <label>API token<input type="password" name="api_token" required></label>
+      <label>Billing CSV<input type="file" name="csv_file" accept=".csv" required></label>
+      <label class="choice"><input type="checkbox" name="bypass_cache" checked> Fetch live metadata</label>
+      <button>Build workbook</button>
+    </form>
+  </article>
+  <article class="card">
+    <h2>Missed Reservations</h2>
+    <form method="post" action="{{ url_for('reports.missed_submit') }}" enctype="multipart/form-data">
+      {{ csrf() }}
+      <label>Usage CSV<input type="file" name="csv_file" accept=".csv" required></label>
+      <button>Build report</button>
+    </form>
+  </article>
+  <article class="card">
+    <h2>Active Lab Users</h2>
+    <form method="post" action="{{ url_for('reports.active_users_submit') }}">
+      {{ csrf() }}
+      <label>API token<input type="password" name="api_token" required></label>
+      <button>Build workbook</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

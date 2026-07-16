@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf %}
+{% block title %}Excel Invoice to PDF{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#475569">
+  <h1>Excel Invoice to PDF</h1>
+  <p>Upload an edited invoice workbook and render it with the shared PDF renderer.</p>
+  <form method="post" enctype="multipart/form-data">
+    {{ csrf() }}
+    <div><label for="invoice_excel">Invoice workbook</label><input id="invoice_excel" type="file" name="invoice_excel" accept=".xlsx,.xlsm" required></div>
+    <div class="actions"><button type="submit">Queue PDF job</button><a class="button secondary" href="/">Back home</a></div>
+  </form>
+</section>
+{% endblock %}

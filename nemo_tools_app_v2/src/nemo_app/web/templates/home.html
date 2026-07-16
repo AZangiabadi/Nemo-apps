@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}NEMO Tools Hub{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Columbia Nano Initiative</p>
+  <h1>NEMO Tools Hub</h1>
+  <p>Billing, reporting, and administration tools backed by one shared NEMO integration.</p>
+</section>
+<section class="grid">
+  {% for tool in tools %}
+    <article class="card" style="--accent: {{ tool.accent }}">
+      <h2>{{ tool.title }}</h2>
+      <p>{{ tool.summary }}</p>
+      <a class="button" href="{{ tool.href }}">Open tool</a>
+    </article>
+  {% endfor %}
+</section>
+{% endblock %}

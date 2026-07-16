@@ -1,0 +1,7 @@
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endmacro %}
+{% macro token(name='api_token') %}
+<div>
+  <label for="{{ name }}">NEMO API token</label>
+  <input id="{{ name }}" type="password" name="{{ name }}" autocomplete="off" required>
+</div>
+{% endmacro %}

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEMO Tools Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <main class="login-shell">
+    <section class="panel">
+      <h1>NEMO Tools Hub</h1>
+      <p>Enter the internal application password.</p>
+      {% if error %}<div class="status error">{{ error }}</div>{% endif %}
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Password<input type="password" name="password" autofocus required></label>
+        <button type="submit">Sign in</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

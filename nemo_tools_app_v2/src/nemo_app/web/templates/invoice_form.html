@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf, token %}
+{% block title %}Invoice Generator{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#9a3412">
+  <h1>NEMO Invoice Generator</h1>
+  <p>Excel and PDF outputs use the same calculated invoice document, keeping totals aligned.</p>
+  <form method="post" enctype="multipart/form-data">
+    {{ csrf() }}
+    {{ token() }}
+    <div><label for="csv_file">Usage CSV</label><input id="csv_file" type="file" name="csv_file" accept=".csv" required></div>
+    <fieldset>
+      <legend>Output</legend>
+      <label class="choice"><input type="checkbox" name="generate_excel" checked> Excel</label>
+      <label class="choice"><input type="checkbox" name="generate_pdf" checked> PDF</label>
+      <label class="choice"><input type="checkbox" name="make_zip" checked> Combine into ZIP</label>
+    </fieldset>
+    <fieldset>
+      <legend>Billing data</legend>
+      <label class="choice"><input type="checkbox" name="bypass_cache" checked> Fetch live NEMO metadata</label>
+      <label class="choice"><input type="checkbox" name="apply_hourly_caps"> Apply hourly/session caps</label>
+      <p class="help">Project caps always apply. When hourly caps are ignored, the BET analyzer retains its required 48-hour limit.</p>
+    </fieldset>
+    <div class="actions"><button type="submit">Queue invoice job</button><a class="button secondary" href="/">Back home</a></div>
+  </form>
+</section>
+{% endblock %}

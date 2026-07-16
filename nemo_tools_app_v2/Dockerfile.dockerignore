@@ -1,0 +1,12 @@
+**
+!refactored_nemo_app
+!refactored_nemo_app/pyproject.toml
+!refactored_nemo_app/uv.lock
+!refactored_nemo_app/README.md
+!refactored_nemo_app/src
+!refactored_nemo_app/src/**
+!Columbia_logo.png
+!nemo_logo.jpeg
+!Account-project-user-adding-Nemo.xlsx
+**/__pycache__
+*.py[cod]

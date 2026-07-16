@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf, token %}
+{% block title %}Account/Project Replacement{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#6d28d9">
+  <h1>Account/Project Replacement</h1>
+  <p>Create a replacement account/project or add old users to an existing one.</p>
+  <form method="post">
+    {{ csrf() }}
+    {{ token() }}
+    <fieldset>
+      <legend>Replacement mode</legend>
+      <label class="choice"><input type="radio" name="mode" value="new" checked> Create new account/project</label>
+      <label class="choice"><input type="radio" name="mode" value="existing"> Use existing account/project</label>
+    </fieldset>
+    <div><label for="old_value">Old project name or ID</label><input id="old_value" type="text" name="old_value" required></div>
+    <div><label for="target_value">Target project name or ID</label><input id="target_value" type="text" name="target_value" required></div>
+    <label class="choice"><input type="checkbox" name="deactivate_old" checked> Deactivate the old account and project</label>
+    <label class="choice"><input type="checkbox" name="dry_run" checked> Dry run only</label>
+    <div class="actions"><button type="submit">Queue replacement</button><a class="button secondary" href="/">Back home</a></div>
+  </form>
+</section>
+{% endblock %}

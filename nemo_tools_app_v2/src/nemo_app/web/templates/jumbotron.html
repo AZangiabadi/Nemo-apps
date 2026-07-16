@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Jumbotron{% endblock %}
+{% block shell_class %}wide{% endblock %}
+{% block body_class %}jumbotron-page{% endblock %}
+{% block site_header %}{% endblock %}
+{% block content %}
+<div id="jumbotron-content">
+  {% if report %}{% include "_jumbotron_content.html" %}{% else %}<div class="status error">{{ error }}</div>{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+{% if report %}
+<script>
+const contentEl = document.getElementById('jumbotron-content');
+const refreshUrl = {{ url_for('dashboard.data')|tojson }};
+const refreshMs = {{ refresh_ms }};
+const scrollStepPx = {{ scroll_step_px }};
+const scrollIntervalMs = {{ scroll_interval_ms }};
+let lastSignature = {{ initial_signature|tojson }};
+let scrollHandle = null;
+let pauseUntil = 0;
+
+function startAutoScroll() {
+  if (scrollHandle !== null) window.clearInterval(scrollHandle);
+  scrollHandle = window.setInterval(() => {
+    if (Date.now() < pauseUntil) return;
+    const maxScrollTop = Math.max(
+      0,
+      document.documentElement.scrollHeight - window.innerHeight,
+    );
+    if (maxScrollTop <= 0) return;
+    const nearBottom = window.scrollY >= maxScrollTop - scrollStepPx - 2;
+    if (nearBottom) {
+      pauseUntil = Date.now() + 2500;
+      window.scrollTo({top: 0, behavior: 'smooth'});
+      return;
+    }
+    window.scrollBy(0, scrollStepPx);
+  }, scrollIntervalMs);
+}
+
+async function refresh() {
+  try {
+    const response = await fetch(refreshUrl, {cache: 'no-store'});
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.signature !== lastSignature) {
+      lastSignature = data.signature;
+      contentEl.innerHTML = data.html;
+      pauseUntil = Date.now() + 1200;
+      window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+  } catch (error) {
+    console.error('Jumbotron refresh failed', error);
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refresh();
+});
+
+startAutoScroll();
+window.setInterval(refresh, refreshMs);
+</script>
+{% endif %}
+{% endblock %}

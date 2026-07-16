@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }}{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#1d4ed8">
+  <h1 id="title">{{ job.title }}</h1>
+  <div class="state-row"><span id="state" class="pill {{ job.status }}">{{ job.status|title }}</span></div>
+  <p id="summary">{{ job.summary or 'Waiting for a worker…' }}</p>
+  <div class="progress"><div id="bar"></div></div>
+  <pre id="logs">Loading job log…</pre>
+  <div id="downloads" class="actions"></div>
+  <div id="result"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const statusUrl = {{ url_for('jobs.status', job_id=job.id)|tojson }};
+const stateEl = document.getElementById('state');
+const summaryEl = document.getElementById('summary');
+const logsEl = document.getElementById('logs');
+const barEl = document.getElementById('bar');
+const downloadsEl = document.getElementById('downloads');
+const resultEl = document.getElementById('result');
+
+function renderData(data) {
+  if (!data || Object.keys(data).length === 0) return;
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(data, null, 2);
+  resultEl.replaceChildren(pre);
+}
+
+async function poll() {
+  try {
+    const response = await fetch(statusUrl, {cache: 'no-store'});
+    if (!response.ok) throw new Error('Job status unavailable');
+    const data = await response.json();
+    stateEl.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+    stateEl.className = `pill ${data.status}`;
+    summaryEl.textContent = data.error || data.summary || '';
+    logsEl.textContent = data.logs.join('\n');
+    const percent = data.total ? Math.min(100, Math.round(data.current / data.total * 100)) : 0;
+    barEl.style.width = `${percent}%`;
+    downloadsEl.replaceChildren(...data.files.map(file => {
+      const link = document.createElement('a');
+      link.className = 'button'; link.href = file.url; link.textContent = file.label;
+      return link;
+    }));
+    if (data.finished) { renderData(data.data); return; }
+  } catch (error) {
+    summaryEl.textContent = `${error.message}; retrying…`;
+  }
+  window.setTimeout(poll, 1200);
+}
+poll();
+</script>
+{% endblock %}

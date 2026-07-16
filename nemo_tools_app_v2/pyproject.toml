@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nemo-tools-hub"
+version = "1.0.0"
+description = "Maintainable NEMO administration, billing, invoice, and reporting tools"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=42,<46",
+    "flask>=3.1,<4",
+    "gunicorn>=23,<24",
+    "openpyxl>=3.1,<4",
+    "pandas>=2.2,<3",
+    "python-dotenv>=1.0,<2",
+    "reportlab>=4.2,<5",
+    "requests>=2.32,<3",
+]
+
+[project.scripts]
+nemo-tools-web = "nemo_app.web.app:main"
+nemo-tools-worker = "nemo_app.jobs.worker:main"
+nemo-tools-cleanup = "nemo_app.jobs.cleanup:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nemo_app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
