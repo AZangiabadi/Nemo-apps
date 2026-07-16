@@ -147,6 +147,7 @@ docker compose down
 - missed reservation rows are excluded from generated invoice Excel/PDF detail lines
 - tool usage rows with quantity less than or equal to 1 are excluded, except `Litho Hood 2`
 - the online invoice form ignores hourly/session caps by default unless `Apply hourly/session caps` is checked
+- when hourly/session caps are ignored, `Micrometrics ASAP 2020 HV BET analyzer` still has a 48-hour cap
 - matching `Staff time` rows are grouped after their tool row; unmatched rows use a `Staff time` table, with a project-summary breakout
 - the PI contacts workbook opens on `PI Project Totals` and includes a `Tool Users` sheet
 

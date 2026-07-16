@@ -423,6 +423,10 @@ TOOL_MAX_HOURS_ALIASES = {
     "fibsamplepreparation": "temfibsamplesprep",
 }
 
+FORCED_MAX_HOURS_WHEN_HOURLY_CAPS_IGNORED_BY_NAME = {
+    "bet": 48.0,
+}
+
 
 # -----------------------------
 # Parsing helpers
@@ -696,12 +700,13 @@ def resolve_max_billable_hours(row: pd.Series) -> Optional[float]:
     return TOOL_MAX_HOURS_BY_NAME.get(tool_key)
 
 
-def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
+def _apply_session_charge_caps_from_max_hours(
+    df: pd.DataFrame, max_billable_hours: pd.Series
+) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["Max Billable Hours"] = df.apply(resolve_max_billable_hours, axis=1)
-    max_billable_hours = pd.to_numeric(df["Max Billable Hours"], errors="coerce")
+    max_billable_hours = pd.to_numeric(max_billable_hours, errors="coerce")
     quantity_hours = df["Quantity"] / 60.0
     capped_mask = (
         ~df["IsConsumable"]
@@ -729,6 +734,39 @@ def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
     )
     df.loc[capped_mask, "Cost"] = scaled_cost.round(2)
     return df
+
+
+def apply_max_session_charge_caps(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    df["Max Billable Hours"] = df.apply(resolve_max_billable_hours, axis=1)
+    return _apply_session_charge_caps_from_max_hours(df, df["Max Billable Hours"])
+
+
+def resolve_forced_max_billable_hours_when_hourly_caps_ignored(
+    row: pd.Series,
+) -> Optional[float]:
+    tool_key = normalize_tool_lookup_key(row.get("Item"))
+    tool_key = TOOL_MAX_HOURS_ALIASES.get(tool_key, tool_key)
+    return FORCED_MAX_HOURS_WHEN_HOURLY_CAPS_IGNORED_BY_NAME.get(tool_key)
+
+
+def apply_forced_session_charge_caps_when_hourly_caps_ignored(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    forced_max_hours = df.apply(
+        resolve_forced_max_billable_hours_when_hourly_caps_ignored, axis=1
+    )
+    if "Max Billable Hours" not in df.columns:
+        df["Max Billable Hours"] = pd.NA
+    df.loc[forced_max_hours.notna(), "Max Billable Hours"] = forced_max_hours.loc[
+        forced_max_hours.notna()
+    ]
+    return _apply_session_charge_caps_from_max_hours(df, forced_max_hours)
 
 
 def _scale_costs_to_target(costs: pd.Series, target_total: float) -> pd.Series:
@@ -2570,6 +2608,8 @@ def load_and_prepare(
     df["Billable User Key"] = df.apply(resolve_billable_user_key, axis=1)
     if apply_hourly_caps:
         df = apply_max_session_charge_caps(df)
+    else:
+        df = apply_forced_session_charge_caps_when_hourly_caps_ignored(df)
     df = apply_project_charge_caps(df)
     df["Subsidy"] = 0.0
     cdg_mask = df["Application identifier"].str.upper().eq("CDG")
