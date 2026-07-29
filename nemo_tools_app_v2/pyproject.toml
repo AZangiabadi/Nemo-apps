@@ -11,18 +11,18 @@ requires-python = ">=3.12"
 dependencies = [
     "cryptography>=48.0.1,<50",
     "flask>=3.1,<4",
-    "gunicorn>=23,<24",
+    "gunicorn>=26.0.0,<27",
     "openpyxl>=3.1,<4",
-    "pandas>=2.2,<3",
+    "pandas>=3.0.5,<4",
     "python-dotenv>=1.0,<2",
-    "reportlab>=4.2,<5",
+    "reportlab>=5.0.0,<6",
     "requests>=2.32,<3",
 ]
 
 [dependency-groups]
 dev = [
     "pip-audit>=2.10,<3",
-    "ruff>=0.15,<1",
+    "ruff>=0.16.0,<1",
 ]
 
 [project.scripts]
