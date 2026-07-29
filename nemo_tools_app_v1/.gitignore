@@ -1,0 +1,10 @@
+.env
+.venv/
+.uv-cache/
+.job_state/
+__pycache__/
+*.py[cod]
+.DS_Store
+generated_invoices/
+outputs/
+*.log

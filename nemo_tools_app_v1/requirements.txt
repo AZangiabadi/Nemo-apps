@@ -1,0 +1,7 @@
+cryptography
+flask
+requests
+pandas
+openpyxl
+reportlab
+python-dotenv

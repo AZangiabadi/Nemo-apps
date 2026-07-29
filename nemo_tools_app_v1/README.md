@@ -1,31 +1,14 @@
-# Nemo Apps Hub
+# NEMO Tools App V1 (Legacy)
 
-Internal Columbia Nano Initiative web app for launching NEMO-related tools from one place.
+Archived legacy implementation of the Columbia Nano Initiative NEMO tools hub.
+The maintained replacement is in the repository's `nemo_tools_app_v2/` folder.
 
-## Active Development
+## Maintenance Status
 
-The actively maintained version of the app lives in `nemo_tools_app_v2/`.
-A clean, self-contained archive of the legacy app lives in
-`nemo_tools_app_v1/` and is tagged as `legacy-v1-before-v2` for reference.
-The original root-level V1 files remain temporarily in place so the existing
-rollback deployment is not disrupted.
-
-For new work, start in:
-
-```bash
-cd nemo_tools_app_v2
-```
-
-See `nemo_tools_app_v2/README.md` for v2 setup, development, and deployment
-instructions.
-
-## Legacy V1
-
-For the organized legacy source and its setup instructions, use:
-
-```bash
-cd nemo_tools_app_v1
-```
+This folder is retained for rollback, comparison, and historical reference. New
+features and fixes should normally be made in V2. The folder contains the complete
+V1 application source and Docker configuration, but intentionally excludes
+secrets, caches, generated invoices, and generated reports.
 
 Current apps:
 - `User/Account/Project Batch Import From Excel`
@@ -52,6 +35,12 @@ Current apps:
 - [`uv`](https://docs.astral.sh/uv/)
 
 ## Setup
+
+Change into this folder before running any command:
+
+```bash
+cd nemo_tools_app_v1
+```
 
 Create or refresh the local virtual environment with:
 
@@ -96,6 +85,8 @@ Flask uses an ad-hoc self-signed certificate in this mode, so the browser warnin
 ## Run With Docker
 
 This project includes a Caddy-based deployment for later public-domain HTTPS.
+It binds host ports 80 and 443, so do not start it while another production
+deployment is using those ports.
 
 Set your domain in `.env`:
 
