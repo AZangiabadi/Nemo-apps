@@ -9,6 +9,11 @@ from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
 
+from nemo_app.billing.gold import (
+    add_gold_deposition_charges,
+    angstrom_source_window,
+    angstrom_tool_ids,
+)
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.prepare import load_usage_csv
 from nemo_app.billing.text import month_label, safe_filename
@@ -124,6 +129,8 @@ def generate_invoices(
     options: InvoiceOptions,
     logo_path: Path | None = None,
     progress: ProgressCallback | None = None,
+    timezone: dt.tzinfo | None = None,
+    generated_at: dt.datetime | None = None,
 ) -> InvoiceResult:
     if not options.generate_excel and not options.generate_pdf:
         raise ValueError("Select at least one invoice output format.")
@@ -132,6 +139,7 @@ def generate_invoices(
     tools = metadata.tools(use_cache=options.use_cache)
     adjustments = metadata.adjustments(use_cache=options.use_cache)
     consumables = metadata.consumable_labs(use_cache=options.use_cache)
+    source = pd.read_csv(csv_path)
     prepared = load_usage_csv(
         csv_path,
         consumable_labs=consumables,
@@ -141,6 +149,21 @@ def generate_invoices(
         filter_invoice_quantities=True,
         apply_hourly_caps=options.apply_hourly_caps,
     )
+    tool_ids = angstrom_tool_ids(tools)
+    source_window = angstrom_source_window(source)
+    if tool_ids and source_window:
+        usage_events = metadata.usage_events_for_tools(
+            tool_ids,
+            start=source_window[0],
+            end=source_window[1],
+        )
+        prepared = add_gold_deposition_charges(
+            prepared,
+            source=source,
+            usage_events=usage_events,
+            tools_by_id=tools,
+            projects_by_name=projects,
+        )
     prepared = prepared.loc[~prepared["IsMissedReservation"].fillna(False)].copy()
     if prepared.empty:
         raise ValueError("No invoiceable rows remain after filtering the CSV.")
@@ -156,7 +179,14 @@ def generate_invoices(
     ]
     if not groups:
         raise ValueError("No invoice groups contain billable activity.")
-    generated_at = dt.datetime.now().astimezone()
+    if generated_at is not None and generated_at.tzinfo is None:
+        raise ValueError("generated_at must include timezone information")
+    if generated_at is None:
+        generated_at = (
+            dt.datetime.now(timezone) if timezone is not None else dt.datetime.now().astimezone()
+        )
+    elif timezone is not None:
+        generated_at = generated_at.astimezone(timezone)
     sequences: dict[str, int] = {}
     documents: list[InvoiceDocument] = []
     used_names: set[str] = set()

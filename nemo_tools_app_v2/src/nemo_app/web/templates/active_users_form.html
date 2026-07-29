@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf, token %}
+{% block title %}Active Lab Users{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Exports</p>
+  <h1>Active Lab Users</h1>
+  <p>Build a workbook of active users and their current lab access.</p>
+</section>
+<section class="grid"><article class="card">
+  <form method="post" action="{{ url_for('reports.active_users_submit') }}">
+    {{ csrf() }}
+    {% if read_only_api_configured %}
+      <p class="help">This read-only tool uses the protected NEMO service account.</p>
+    {% else %}
+      {{ token() }}
+    {% endif %}
+    <button>Build workbook</button>
+  </form>
+</article></section>
+{% endblock %}

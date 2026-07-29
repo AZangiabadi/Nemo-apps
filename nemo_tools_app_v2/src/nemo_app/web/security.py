@@ -17,6 +17,8 @@ from flask import (
 
 auth_blueprint = Blueprint("auth", __name__)
 
+_JUMBOTRON_KIOSK_PATHS = frozenset({"/jumbotron", "/jumbotron/data"})
+
 
 def _safe_next_url(value: str | None) -> str | None:
     if not value:
@@ -39,6 +41,10 @@ def _access_password() -> str:
     return current_app.extensions["nemo_config"].access_password
 
 
+def _jumbotron_kiosk_token() -> str:
+    return current_app.extensions["nemo_config"].jumbotron_kiosk_token
+
+
 def install_security(app) -> None:
     app.jinja_env.globals["csrf_token"] = csrf_token
 
@@ -48,6 +54,21 @@ def install_security(app) -> None:
             "/static/"
         ):
             return None
+
+        supplied_kiosk_token = request.args.get("kiosk_token", "")
+        if request.method == "GET" and request.path == "/jumbotron" and supplied_kiosk_token:
+            expected_kiosk_token = _jumbotron_kiosk_token()
+            if expected_kiosk_token and hmac.compare_digest(
+                expected_kiosk_token, supplied_kiosk_token
+            ):
+                session["jumbotron_kiosk"] = True
+                return redirect(url_for("dashboard.page"))
+            if _access_password() and not session.get("authenticated"):
+                return redirect(url_for("auth.login", next=url_for("dashboard.page")))
+
+        if session.get("jumbotron_kiosk") and request.path in _JUMBOTRON_KIOSK_PATHS:
+            return None
+
         password = _access_password()
         if password and not session.get("authenticated"):
             return redirect(url_for("auth.login", next=request.full_path))

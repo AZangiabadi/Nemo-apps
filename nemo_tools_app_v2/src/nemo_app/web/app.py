@@ -37,6 +37,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         cache_seconds=settings.jumbotron_cache_seconds,
     )
     app.jinja_env.globals["tools"] = TOOLS
+    app.jinja_env.globals["read_only_api_configured"] = bool(settings.read_only_api_token)
     app.register_blueprint(auth_blueprint)
     app.register_blueprint(core_blueprint)
     app.register_blueprint(invoice_blueprint)

@@ -1,0 +1,12 @@
+services:
+  proxy:
+    environment:
+      TOOLS_NEMO_DOMAIN: ${TOOLS_NEMO_DOMAIN:?Set TOOLS_NEMO_DOMAIN in .env}
+
+volumes:
+  caddy_data:
+    external: true
+    name: nemo-apps_caddy_data
+  caddy_config:
+    external: true
+    name: nemo-apps_caddy_config

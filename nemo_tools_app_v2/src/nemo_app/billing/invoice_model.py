@@ -136,10 +136,16 @@ def _project_summaries(
     group_columns = ["Project", "Application identifier"]
     for (project, application), group in frame.groupby(group_columns, dropna=False):
         staff = group["Item_norm"].astype(str).str.lower().eq("staff time")
-        lab_totals = {
-            lab: round(float(group.loc[group["Lab"].eq(lab) & ~staff, "Cost"].sum()), 2)
-            for lab in DESIRED_LAB_ORDER
-        }
+        consumable = group.get(
+            "IsConsumable", pd.Series(False, index=group.index, dtype=bool)
+        ).fillna(False)
+        lab_totals: dict[str, float] = {}
+        for lab in DESIRED_LAB_ORDER:
+            if lab == "Consumable":
+                rows = consumable & ~staff
+            else:
+                rows = group["Lab"].eq(lab) & ~consumable & ~staff
+            lab_totals[lab] = round(float(group.loc[rows, "Cost"].sum()), 2)
         project_key = (str(project), str(application))
         yield ProjectSummary(
             project=str(project),

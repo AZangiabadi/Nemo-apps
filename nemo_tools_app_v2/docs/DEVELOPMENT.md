@@ -24,8 +24,9 @@ Excel and PDF cannot drift apart.
 ```bash
 uv sync --frozen
 uv run python -m unittest discover -s tests -v
-uvx ruff format --check src tests
-uvx ruff check src tests
+uv run ruff format --check src tests
+uv run ruff check src tests
+uv run pip-audit --path .venv/lib/python3.12/site-packages --progress-spinner off
 uv run python -m compileall -q src tests
 ```
 

@@ -48,7 +48,9 @@ class AppConfig:
     access_password: str
     flask_secret_key: str
     job_secret_key: str
+    read_only_api_token: str
     jumbotron_api_token: str
+    jumbotron_kiosk_token: str
     jumbotron_refresh_seconds: int
     jumbotron_cache_seconds: int
     jumbotron_scroll_step_px: int
@@ -82,7 +84,9 @@ class AppConfig:
             access_password=os.environ.get("NEMO_APP_ACCESS_PASSWORD", ""),
             flask_secret_key=os.environ.get("NEMO_FLASK_SECRET_KEY", "dev-only-secret"),
             job_secret_key=os.environ.get("NEMO_JOB_SECRET_KEY", ""),
+            read_only_api_token=os.environ.get("NEMO_READ_ONLY_API_TOKEN", ""),
             jumbotron_api_token=os.environ.get("NEMO_JUMBOTRON_API_TOKEN", ""),
+            jumbotron_kiosk_token=os.environ.get("NEMO_JUMBOTRON_KIOSK_TOKEN", ""),
             jumbotron_refresh_seconds=_env_int("NEMO_JUMBOTRON_REFRESH_SECONDS", 15, minimum=5),
             jumbotron_cache_seconds=_env_int("NEMO_JUMBOTRON_CACHE_SECONDS", 15),
             jumbotron_scroll_step_px=_env_int("NEMO_JUMBOTRON_SCROLL_STEP_PX", 1, minimum=1),
@@ -104,6 +108,8 @@ class AppConfig:
             errors.append("NEMO_FLASK_SECRET_KEY must contain at least 32 random characters")
         if not self.job_secret_key:
             errors.append("NEMO_JOB_SECRET_KEY is required")
+        if self.jumbotron_kiosk_token and len(self.jumbotron_kiosk_token) < 32:
+            errors.append("NEMO_JUMBOTRON_KIOSK_TOKEN must contain at least 32 random characters")
         if not self.nemo_base_url.startswith("https://"):
             errors.append("NEMO_BASE_URL must use HTTPS")
         if errors:

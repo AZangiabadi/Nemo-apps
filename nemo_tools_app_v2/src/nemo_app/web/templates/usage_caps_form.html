@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf %}
+{% block title %}Usage Cap Analysis{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Exports</p>
+  <h1>Usage Cap Analysis</h1>
+  <p>Analyze session and project caps across one or more usage exports.</p>
+</section>
+<section class="grid"><article class="card">
+  <form method="post" action="{{ url_for('reports.usage_caps_submit') }}" enctype="multipart/form-data">
+    {{ csrf() }}
+    <label>Usage CSV files<input type="file" name="usage_csvs" accept=".csv" multiple required></label>
+    <button>Build workbook</button>
+  </form>
+</article></section>
+{% endblock %}

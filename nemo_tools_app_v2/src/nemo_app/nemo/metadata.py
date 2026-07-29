@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 
 from nemo_app.billing.invoice_model import PIInfo
 from nemo_app.billing.text import normalize_item
@@ -68,6 +70,26 @@ class MetadataRepository:
 
     def users(self, *, use_cache: bool = True) -> list[dict[str, Any]]:
         return self._load("users", lambda: self.client.fetch_all("users/"), use_cache=use_cache)
+
+    def usage_events_for_tools(
+        self,
+        tool_ids: set[int],
+        *,
+        start: dt.datetime,
+        end: dt.datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch fresh usage-event run data for the requested tools and time window."""
+        records: list[dict[str, Any]] = []
+        for tool_id in sorted(tool_ids):
+            query = urlencode(
+                {
+                    "tool": tool_id,
+                    "start__gte": start.isoformat(),
+                    "start__lt": end.isoformat(),
+                }
+            )
+            records.extend(self.client.fetch_all(f"usage_events/?{query}"))
+        return records
 
 
 def _last_first(name: str) -> str:

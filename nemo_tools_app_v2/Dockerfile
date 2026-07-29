@@ -1,6 +1,6 @@
-FROM ghcr.io/astral-sh/uv:0.8.4 AS uv
+FROM ghcr.io/astral-sh/uv:0.11.28 AS uv
 
-FROM python:3.12.11-slim-bookworm
+FROM python:3.12.13-slim-bookworm
 
 COPY --from=uv /uv /uvx /bin/
 
@@ -14,10 +14,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY refactored_nemo_app/pyproject.toml refactored_nemo_app/uv.lock refactored_nemo_app/README.md ./
+COPY nemo_tools_app_v2/pyproject.toml nemo_tools_app_v2/uv.lock nemo_tools_app_v2/README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY refactored_nemo_app/src ./src
+COPY nemo_tools_app_v2/src ./src
 RUN uv sync --frozen --no-dev
 
 COPY Columbia_logo.png nemo_logo.jpeg Account-project-user-adding-Nemo.xlsx ./assets/

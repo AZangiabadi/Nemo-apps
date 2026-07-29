@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf %}
+{% block title %}Missed Reservations{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Exports</p>
+  <h1>Missed Reservations</h1>
+  <p>Extract missed-reservation rows from a NEMO usage export.</p>
+</section>
+<section class="grid"><article class="card">
+  <form method="post" action="{{ url_for('reports.missed_submit') }}" enctype="multipart/form-data">
+    {{ csrf() }}
+    <label>Usage CSV<input type="file" name="csv_file" accept=".csv" required></label>
+    <button>Build report</button>
+  </form>
+</article></section>
+{% endblock %}

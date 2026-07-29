@@ -7,7 +7,11 @@
   <p>Excel and PDF outputs use the same calculated invoice document, keeping totals aligned.</p>
   <form method="post" enctype="multipart/form-data">
     {{ csrf() }}
-    {{ token() }}
+    {% if read_only_api_configured %}
+      <p class="help">This read-only tool uses the protected NEMO service account.</p>
+    {% else %}
+      {{ token() }}
+    {% endif %}
     <div><label for="csv_file">Usage CSV</label><input id="csv_file" type="file" name="csv_file" accept=".csv" required></div>
     <fieldset>
       <legend>Output</legend>

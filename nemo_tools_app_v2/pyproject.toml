@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nemo-tools-hub"
-version = "1.0.0"
+version = "2.0.0"
 description = "Maintainable NEMO administration, billing, invoice, and reporting tools"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "cryptography>=42,<46",
+    "cryptography>=48.0.1,<50",
     "flask>=3.1,<4",
     "gunicorn>=23,<24",
     "openpyxl>=3.1,<4",
@@ -17,6 +17,12 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "reportlab>=4.2,<5",
     "requests>=2.32,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pip-audit>=2.10,<3",
+    "ruff>=0.15,<1",
 ]
 
 [project.scripts]

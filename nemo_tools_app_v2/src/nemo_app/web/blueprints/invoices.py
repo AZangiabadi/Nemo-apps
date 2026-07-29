@@ -6,7 +6,7 @@ from flask import Blueprint, flash, render_template, request
 
 from nemo_app.invoices.service import InvoiceOptions
 
-from ..common import checkbox, enqueue_upload_job, job_redirect
+from ..common import checkbox, enqueue_upload_job, job_redirect, read_only_api_secrets
 
 invoice_blueprint = Blueprint("invoices", __name__)
 
@@ -19,9 +19,12 @@ def invoice_form():
 @invoice_blueprint.post("/tools/invoices")
 def invoice_submit():
     upload = request.files.get("csv_file")
-    token = request.form.get("api_token", "").strip()
-    if not upload or not upload.filename or not token:
-        flash("Choose a usage CSV and enter your NEMO API token.", "error")
+    api_secrets = read_only_api_secrets()
+    if not upload or not upload.filename:
+        flash("Choose a usage CSV.", "error")
+        return render_template("invoice_form.html"), 400
+    if api_secrets is None:
+        flash("Enter your NEMO API token.", "error")
         return render_template("invoice_form.html"), 400
     options = InvoiceOptions(
         generate_excel=checkbox("generate_excel"),
@@ -38,7 +41,7 @@ def invoice_submit():
         title="Invoice generation",
         upload_specs=[(upload, {".csv"})],
         payload={"input": "input_1.csv", "options": asdict(options)},
-        secrets={"api_token": token},
+        secrets=api_secrets,
     )
     return job_redirect(job_id)
 

@@ -1,6 +1,6 @@
 # Migration and rollout
 
-The rewrite is deliberately located in `refactored_nemo_app`. It does not import
+The rewrite is deliberately located in `nemo_tools_app_v2`. It does not import
 the legacy modules, and it does not modify the original application files.
 
 ## Recommended order of work

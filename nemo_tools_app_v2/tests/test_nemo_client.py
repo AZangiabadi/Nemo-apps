@@ -45,6 +45,16 @@ class NemoClientTests(unittest.TestCase):
         self.assertEqual(patched, {"projects": [2]})
         self.assertEqual(len(client.actions), 3)
 
+    def test_read_only_client_rejects_every_supported_write_method(self) -> None:
+        client = NemoClient("token", dry_run=True, read_only=True)
+
+        with self.assertRaisesRegex(PermissionError, "read-only"):
+            client.post("users/", {"username": "ada"})
+        with self.assertRaisesRegex(PermissionError, "read-only"):
+            client.patch("users/1/", {"is_active": False})
+
+        self.assertEqual(client.actions, [])
+
     def test_pagination_cannot_send_the_token_to_another_host(self) -> None:
         client = NemoClient("token", base_url="https://nemo.example/api/")
         client.session.get = lambda *_args, **_options: _Response(  # type: ignore[method-assign]

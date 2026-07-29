@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.prepare import prepare_usage_dataframe
 from nemo_app.invoices.excel_renderer import render_invoice_workbook
-from nemo_app.invoices.pdf_renderer import render_invoice_pdf
+from nemo_app.invoices.pdf_renderer import _invoice_details_markup, render_invoice_pdf
 from tests.fixtures import usage_frame
 
 
@@ -35,6 +35,11 @@ class InvoiceCharacterizationTests(unittest.TestCase):
 
     def test_excel_and_pdf_render_from_same_document(self) -> None:
         document = self.document()
+        header_markup = _invoice_details_markup(document)
+        self.assertEqual(header_markup.count("<br/>"), 3)
+        self.assertNotIn("&lt;br/&gt;", header_markup)
+        self.assertIn("<b>PI:</b> PI, Ada", header_markup)
+        self.assertIn("<b>Email:</b> ada.pi@example.edu", header_markup)
         with tempfile.TemporaryDirectory() as folder:
             folder_path = Path(folder)
             xlsx_path = folder_path / "invoice.xlsx"

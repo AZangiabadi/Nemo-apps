@@ -19,11 +19,13 @@ class NemoClient:
         *,
         base_url: str = "https://nemo.cni.columbia.edu/api/",
         dry_run: bool = False,
+        read_only: bool = False,
         timeout: float = 60.0,
     ):
         self.token = token.strip()
         self.base_url = base_url.rstrip("/") + "/"
         self.dry_run = dry_run
+        self.read_only = read_only
         self.timeout = timeout
         self.actions: list[str] = []
         self._dry_run_ids: dict[str, int] = {}
@@ -86,6 +88,8 @@ class NemoClient:
         return result
 
     def post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.read_only:
+            raise PermissionError("This NEMO client is restricted to read-only requests")
         if self.dry_run:
             next_id = self._dry_run_ids.get(endpoint, -1)
             self._dry_run_ids[endpoint] = next_id - 1
@@ -97,6 +101,8 @@ class NemoClient:
         return response.json()
 
     def patch(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.read_only:
+            raise PermissionError("This NEMO client is restricted to read-only requests")
         if self.dry_run:
             self.actions.append(f"PATCH {endpoint} {payload!r}")
             return dict(payload)

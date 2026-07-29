@@ -1,0 +1,81 @@
+name: NEMO Tools v2 CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nemo-v2-ci.yml"
+      - "nemo_tools_app_v2/**"
+      - "Columbia_logo.png"
+      - "nemo_logo.jpeg"
+      - "Account-project-user-adding-Nemo.xlsx"
+  pull_request:
+    paths:
+      - ".github/workflows/nemo-v2-ci.yml"
+      - "nemo_tools_app_v2/**"
+      - "Columbia_logo.png"
+      - "nemo_logo.jpeg"
+      - "Account-project-user-adding-Nemo.xlsx"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nemo-v2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Tests, lint, and dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nemo_tools_app_v2
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.28"
+          python-version: "3.12.13"
+          working-directory: nemo_tools_app_v2
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Run unit and integration tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Check formatting
+        run: uv run ruff format --check src tests
+
+      - name: Run lint checks
+        run: uv run ruff check src tests
+
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src tests
+
+      - name: Audit locked dependencies
+        run: uv run pip-audit --path .venv/lib/python3.12/site-packages --progress-spinner off
+
+  container:
+    name: Compose and container build
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Validate production Compose configuration
+        working-directory: nemo_tools_app_v2
+        env:
+          NEMO_APP_ACCESS_PASSWORD: ci-only-password
+          NEMO_FLASK_SECRET_KEY: ci-only-secret-key-with-at-least-32-bytes
+          NEMO_JOB_SECRET_KEY: G1fcLu0OtS2Oz3Yr1JaeTIugfBcuY0wgqqVvMDvDnrY=
+        run: docker compose config --quiet
+
+      - name: Build the production image
+        run: docker build --file nemo_tools_app_v2/Dockerfile .

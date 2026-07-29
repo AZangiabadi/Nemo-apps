@@ -23,7 +23,9 @@ class WorkerIntegrationTests(unittest.TestCase):
                 data_dir=root / "data",
                 asset_dir=root,
                 access_password="",
+                read_only_api_token="",
                 jumbotron_api_token="",
+                jumbotron_kiosk_token="",
                 job_secret_key="",
             )
             store = create_job_store(config)

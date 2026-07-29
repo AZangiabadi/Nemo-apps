@@ -19,6 +19,16 @@ def money(value: float) -> str:
     return f"${float(value):,.2f}"
 
 
+def _invoice_details_markup(document: InvoiceDocument) -> str:
+    details = (
+        ("PI", document.pi_name),
+        ("Email", document.pi_email or "N/A"),
+        ("Billing Month", month_label(document.period)),
+        ("Invoice #", document.invoice_number),
+    )
+    return "<br/>".join(f"<b>{escape(label)}:</b> {escape(str(value))}" for label, value in details)
+
+
 def _footer(canvas, document) -> None:
     canvas.saveState()
     canvas.setFont("Helvetica", 8)
@@ -50,6 +60,12 @@ def render_invoice_pdf(
     styles = getSampleStyleSheet()
     small = ParagraphStyle("InvoiceSmall", parent=styles["Normal"], fontSize=8, leading=10)
     small_bold = ParagraphStyle("InvoiceSmallBold", parent=small, fontName="Helvetica-Bold")
+    header_details = ParagraphStyle(
+        "InvoiceHeaderDetails",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=13,
+    )
     heading = ParagraphStyle(
         "InvoiceHeading", parent=styles["Heading2"], fontSize=11, spaceBefore=9, spaceAfter=4
     )
@@ -64,12 +80,7 @@ def render_invoice_pdf(
     header = Table(
         [
             [
-                paragraph(
-                    f"PI: {document.pi_name}<br/>Email: {document.pi_email or 'N/A'}<br/>"
-                    f"Billing Month: {month_label(document.period)}<br/>"
-                    f"Invoice #: {document.invoice_number}",
-                    small_bold,
-                ),
+                Paragraph(_invoice_details_markup(document), header_details),
                 Paragraph("<b>Columbia Nano Initiative</b><br/>Facility Usage Invoice", title),
                 logo,
             ]

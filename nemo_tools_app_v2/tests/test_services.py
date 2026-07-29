@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import tempfile
 import unittest
 import zipfile
@@ -105,6 +106,33 @@ class ServiceTests(unittest.TestCase):
             self.assertTrue(any(name.endswith(".xlsx") for name in names))
             self.assertTrue(any(name.endswith(".pdf") for name in names))
             self.assertTrue(any("PI-Contacts" in name for name in names))
+
+    def test_multi_period_archive_timestamp_uses_configured_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "usage.csv"
+            frame = usage_frame()
+            may_row = frame.iloc[0].copy()
+            may_row["Start time"] = "05/10/2026 @ 09:00 AM"
+            may_row["End time"] = "05/10/2026 @ 07:00 PM"
+            frame.loc[len(frame)] = may_row
+            frame.to_csv(source, index=False)
+
+            result = generate_invoices(
+                source,
+                root / "output",
+                metadata=_Metadata(),  # type: ignore[arg-type]
+                options=InvoiceOptions(generate_pdf=False, make_zip=True),
+                timezone=ZoneInfo("America/New_York"),
+                generated_at=dt.datetime(2026, 7, 29, 3, 48, 13, tzinfo=dt.UTC),
+            )
+
+            self.assertEqual(result.files[0].name, "CNI-Nemo-Invoices-20260728-234813.zip")
+            with zipfile.ZipFile(result.files[0]) as archive:
+                self.assertIn(
+                    "CNI-Nemo-Invoice-PI-Contacts-20260728-234813.xlsx",
+                    archive.namelist(),
+                )
 
     def test_remaining_workbook_reports(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

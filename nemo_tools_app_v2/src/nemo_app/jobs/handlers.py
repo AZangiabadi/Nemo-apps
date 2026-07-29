@@ -59,9 +59,15 @@ class JobContext:
             raise ValueError("This job requires a NEMO API token")
         return NemoClient(token, base_url=self.config.api_base_url, dry_run=dry_run)
 
+    def read_only_client(self) -> NemoClient:
+        token = self.config.read_only_api_token or self.job.secrets.get("api_token", "")
+        if not token:
+            raise ValueError("This job requires the server read-only NEMO API token")
+        return NemoClient(token, base_url=self.config.api_base_url, read_only=True)
+
     def metadata(self) -> MetadataRepository:
         return MetadataRepository(
-            self.client(),
+            self.read_only_client(),
             JsonTTLCache(self.config.cache_dir / "metadata", self.config.metadata_cache_seconds),
         )
 
@@ -81,6 +87,7 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         options=options,
         logo_path=_asset(context.config, "Columbia_logo.png"),
         progress=context.progress,
+        timezone=context.config.timezone,
     )
     return (
         f"Created {result.invoice_count} invoice(s)",
@@ -147,7 +154,7 @@ def _user_pi(context: JobContext) -> tuple[str, dict[str, Any]]:
 
 def _active_users(context: JobContext) -> tuple[str, dict[str, Any]]:
     path = context.output_dir / "active_lab_users.xlsx"
-    result = build_active_lab_users_report(path, client=context.client())
+    result = build_active_lab_users_report(path, client=context.read_only_client())
     return "Active lab users report ready", context.files_result([path], **_result_data(result))
 
 

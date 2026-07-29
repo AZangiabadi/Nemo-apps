@@ -19,6 +19,13 @@ def job_store() -> JobStore:
     return current_app.extensions["job_store"]
 
 
+def read_only_api_secrets() -> dict[str, str] | None:
+    if config().read_only_api_token:
+        return {}
+    token = request.form.get("api_token", "").strip()
+    return {"api_token": token} if token else None
+
+
 def save_job_upload(
     job_id: str,
     upload: FileStorage,

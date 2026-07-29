@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /nemo_tools_app_v2
+    schedule:
+      interval: weekly
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directory: /nemo_tools_app_v2
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

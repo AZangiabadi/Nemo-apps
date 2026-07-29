@@ -11,3 +11,7 @@ invoice_generator_runs.log
 .env
 .env.*
 !.env.example
+/import files/
+/duplicate_*.csv
+/private_data_archive/
+/deployment_backups/

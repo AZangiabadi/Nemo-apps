@@ -3,7 +3,7 @@ name: nemo-tools-hub
 x-app: &app
   build:
     context: ..
-    dockerfile: refactored_nemo_app/Dockerfile
+    dockerfile: nemo_tools_app_v2/Dockerfile
   environment:
     NEMO_DATA_DIR: /app/data
     NEMO_ASSET_DIR: /app/assets
@@ -13,7 +13,9 @@ x-app: &app
     NEMO_APP_ACCESS_PASSWORD: ${NEMO_APP_ACCESS_PASSWORD:?Set NEMO_APP_ACCESS_PASSWORD in .env}
     NEMO_FLASK_SECRET_KEY: ${NEMO_FLASK_SECRET_KEY:?Set NEMO_FLASK_SECRET_KEY in .env}
     NEMO_JOB_SECRET_KEY: ${NEMO_JOB_SECRET_KEY:?Set NEMO_JOB_SECRET_KEY in .env}
+    NEMO_READ_ONLY_API_TOKEN: ${NEMO_READ_ONLY_API_TOKEN:-}
     NEMO_JUMBOTRON_API_TOKEN: ${NEMO_JUMBOTRON_API_TOKEN:-}
+    NEMO_JUMBOTRON_KIOSK_TOKEN: ${NEMO_JUMBOTRON_KIOSK_TOKEN:-}
     NEMO_JUMBOTRON_REFRESH_SECONDS: ${NEMO_JUMBOTRON_REFRESH_SECONDS:-15}
     NEMO_JUMBOTRON_CACHE_SECONDS: ${NEMO_JUMBOTRON_CACHE_SECONDS:-15}
     NEMO_JUMBOTRON_SCROLL_STEP_PX: ${NEMO_JUMBOTRON_SCROLL_STEP_PX:-1}
@@ -53,7 +55,7 @@ services:
     command: ["nemo-tools-worker"]
 
   proxy:
-    image: caddy:2.10.0-alpine
+    image: caddy:2
     depends_on:
       web:
         condition: service_healthy
