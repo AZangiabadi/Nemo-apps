@@ -1,30 +1,36 @@
 {% extends "base.html" %}
 {% block title %}Reports{% endblock %}
 {% block content %}
-<section class="hero"><p class="eyebrow">Exports</p><h1>NEMO Reports</h1><p>Select a report. Each one runs as a durable background job.</p></section>
+<section class="workspace-heading">
+  <div>
+    <p class="eyebrow">Exports</p>
+    <h1>NEMO Reports</h1>
+    <p>Select a report. Each one runs as a durable background job.</p>
+  </div>
+</section>
 <section class="grid report-grid">
   <article class="card">
-    <h2>Detailed Financials</h2>
+    <h3>Detailed Financials</h3>
     <p>Transaction-level financial details and summary tabs.</p>
     <a class="button" href="{{ url_for('reports.detailed_page') }}">Open report</a>
   </article>
   <article class="card">
-    <h2>Usage Cap Analysis</h2>
+    <h3>Usage Cap Analysis</h3>
     <p>Session-cap and project-cap analysis across usage exports.</p>
     <a class="button" href="{{ url_for('reports.usage_caps_page') }}">Open report</a>
   </article>
   <article class="card">
-    <h2>User PI Report</h2>
+    <h3>User PI Report</h3>
     <p>User, project, and PI relationships derived from billing activity.</p>
     <a class="button" href="{{ url_for('reports.user_pi_page') }}">Open report</a>
   </article>
   <article class="card">
-    <h2>Missed Reservations</h2>
+    <h3>Missed Reservations</h3>
     <p>Missed-reservation rows from a NEMO usage export.</p>
     <a class="button" href="{{ url_for('reports.missed_page') }}">Open report</a>
   </article>
   <article class="card">
-    <h2>Active Lab Users</h2>
+    <h3>Active Lab Users</h3>
     <p>Active users and current lab access from NEMO.</p>
     <a class="button" href="{{ url_for('reports.active_users_page') }}">Open report</a>
   </article>

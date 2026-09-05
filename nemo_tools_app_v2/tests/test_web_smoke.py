@@ -68,7 +68,9 @@ class WebSmokeTests(unittest.TestCase):
                 "Jumbotron",
             )
 
-            positions = [page.index(title) for title in titles]
+            cards_start = page.index('<div class="grid">')
+            card_area = page[cards_start:]
+            positions = [card_area.index(title) for title in titles]
             self.assertEqual(positions, sorted(positions))
 
     def test_upload_is_queued_and_token_is_encrypted(self) -> None:

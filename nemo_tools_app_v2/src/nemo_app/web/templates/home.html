@@ -1,18 +1,47 @@
 {% extends "base.html" %}
 {% block title %}NEMO Tools Hub{% endblock %}
 {% block content %}
-<section class="hero">
-  <p class="eyebrow">Columbia Nano Initiative</p>
-  <h1>NEMO Tools Hub</h1>
-  <p>Billing, reporting, and administration tools backed by one shared NEMO integration.</p>
+<section class="workspace-heading">
+  <div>
+    <p class="eyebrow">Columbia Nano Initiative</p>
+    <h1>NEMO Tools Hub</h1>
+    <p>Run billing, reporting, and administration work from one shared NEMO workspace.</p>
+  </div>
+  <a class="button secondary" href="{{ url_for('reports.reports_page') }}">View reports</a>
 </section>
-<section class="grid">
-  {% for tool in tools %}
-    <article class="card" style="--accent: {{ tool.accent }}">
-      <h2>{{ tool.title }}</h2>
-      <p>{{ tool.summary }}</p>
-      <a class="button" href="{{ tool.href }}">Open tool</a>
-    </article>
-  {% endfor %}
+
+<section class="tool-layout" aria-label="NEMO tools">
+  <aside class="tool-rail" aria-label="Tool groups">
+    <a href="{{ url_for('invoices.invoice_form') }}">Invoices</a>
+    <a href="{{ url_for('reports.reports_page') }}">Reports</a>
+    <a href="{{ url_for('administration.import_form') }}">Import</a>
+    <a href="{{ url_for('dashboard.page') }}">Jumbotron</a>
+  </aside>
+  <div class="tool-sections">
+    <section id="billing" class="tool-section">
+      <div class="section-heading">
+        <p class="eyebrow">Tools</p>
+        <h2>Choose a workflow</h2>
+      </div>
+      <div class="grid">
+        {% for tool in tools %}
+          <article class="card" style="--accent: {{ tool.accent }}">
+            {% if tool.slug in ["invoices", "excel-to-pdf", "detailed-financials"] %}
+              <span class="card-kicker">Billing</span>
+            {% elif tool.slug in ["usage-caps", "user-pi", "missed-reservations", "active-users"] %}
+              <span class="card-kicker">Reports</span>
+            {% elif tool.slug in ["user-import", "replacement"] %}
+              <span class="card-kicker">Administration</span>
+            {% else %}
+              <span class="card-kicker">Live</span>
+            {% endif %}
+            <h3>{{ tool.title }}</h3>
+            <p>{{ tool.summary }}</p>
+            <a class="button" href="{{ tool.href }}">Open</a>
+          </article>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
 </section>
 {% endblock %}
