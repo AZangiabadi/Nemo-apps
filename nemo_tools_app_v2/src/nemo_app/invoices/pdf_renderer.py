@@ -103,8 +103,8 @@ def render_invoice_pdf(
     payment_instructions = ParagraphStyle(
         "InvoicePaymentInstructions",
         parent=small,
-        fontSize=8,
-        leading=8,
+        fontSize=10,
+        leading=10,
     )
 
     def paragraph(value: object, style=small):
