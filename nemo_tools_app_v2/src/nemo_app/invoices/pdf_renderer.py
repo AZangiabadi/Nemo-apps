@@ -4,7 +4,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -15,6 +15,18 @@ from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.text import month_label
 
 CHECK_PAYMENT_APPLICATIONS = frozenset({"industry", "external academic"})
+PAYMENT_ADDRESS_LINES = (
+    "Please Mail Checks To:",
+    "Columbia Nano Initiative",
+    "530 W 120th Street, RM 1001",
+    "Mail Code 8903 - CEPSR Building",
+    "New York, NY 10027",
+    "Email: cnibilling@columbia.edu",
+)
+PAYMENT_NOTE_LINES = (
+    "Checks Only! Make payable to Columbia University.",
+    "Payment due within 30 days of receipt.",
+)
 
 
 def money(value: float) -> str:
@@ -22,34 +34,23 @@ def money(value: float) -> str:
 
 
 def _invoice_details_markup(document: InvoiceDocument) -> str:
-    details = (
-        ("PI", document.pi_name),
-        ("Email", document.pi_email or "N/A"),
-        ("Billing Month", month_label(document.period)),
-        ("Invoice #", document.invoice_number),
+    return "<br/>".join(f"<b>{escape(line)}</b>" for line in _invoice_detail_lines(document))
+
+
+def _invoice_detail_lines(document: InvoiceDocument) -> tuple[str, ...]:
+    return (
+        f"PI: {document.pi_name}",
+        f"Email: {document.pi_email or 'N/A'}",
+        f"Billing Month: {month_label(document.period)}",
+        f"Invoice #: {document.invoice_number}",
+        f"Generated: {document.generated_at.strftime('%Y-%m-%d %H:%M')} ET",
     )
-    return "<br/>".join(f"<b>{escape(label)}:</b> {escape(str(value))}" for label, value in details)
 
 
 def _payment_instructions_markup() -> str:
-    mailing_address = (
-        "Please Mail Checks To:",
-        "Columbia Nano Initiative",
-        "530 W 120th Street, RM 1001",
-        "Mail Code 8903 - CEPSR",
-        "Building",
-        "New York, NY 10027",
-        "Email: cnibilling@columbia.edu",
-    )
-    payment_note = (
-        "Checks Only! Make payable to",
-        "Columbia University.",
-        "Payment due within 30 days of",
-        "receipt.",
-    )
-    address = "<br/>".join(escape(line) for line in mailing_address)
-    note = "<br/>".join(escape(line) for line in payment_note)
-    return f"<b>{address}</b><br/><br/><i>{note}</i>"
+    address = "<br/>".join(escape(line) for line in PAYMENT_ADDRESS_LINES)
+    note = "<br/>".join(escape(line) for line in PAYMENT_NOTE_LINES)
+    return f"<br/><b>{address}</b><br/><br/><i>{note}</i>"
 
 
 def _uses_check_payment(document: InvoiceDocument) -> bool:
@@ -88,50 +89,104 @@ def render_invoice_pdf(
         author="NEMO Tools Hub",
     )
     styles = getSampleStyleSheet()
-    small = ParagraphStyle("InvoiceSmall", parent=styles["Normal"], fontSize=8, leading=10)
+    normal = ParagraphStyle("InvoiceNormal", parent=styles["Normal"], fontSize=14, leading=14)
+    small = ParagraphStyle("InvoiceSmall", parent=normal, fontSize=8, leading=10)
     small_bold = ParagraphStyle("InvoiceSmallBold", parent=small, fontName="Helvetica-Bold")
     header_details = ParagraphStyle(
         "InvoiceHeaderDetails",
-        parent=styles["Normal"],
-        fontSize=10,
-        leading=13,
+        parent=normal,
+        fontName="Helvetica-Bold",
+        alignment=TA_LEFT,
+        leading=11,
+        spaceBefore=0,
+        spaceAfter=0,
     )
     heading = ParagraphStyle(
         "InvoiceHeading", parent=styles["Heading2"], fontSize=11, spaceBefore=9, spaceAfter=4
     )
-    title = ParagraphStyle("InvoiceTitle", parent=styles["Title"], fontSize=16, alignment=TA_CENTER)
-    payment_instructions = ParagraphStyle(
-        "InvoicePaymentInstructions",
+    title = ParagraphStyle(
+        "InvoiceTitle",
+        parent=styles["Title"],
+        fontSize=16,
+        leading=18,
+        spaceAfter=6,
+        alignment=TA_CENTER,
+    )
+    payment_bold = ParagraphStyle(
+        "InvoicePaymentBold",
         parent=small,
-        fontSize=10,
-        leading=10,
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        leading=12,
+        alignment=TA_LEFT,
+    )
+    payment_italic = ParagraphStyle(
+        "InvoicePaymentItalic",
+        parent=small,
+        fontName="Helvetica-Oblique",
+        fontSize=12,
+        leading=12,
+        alignment=TA_LEFT,
     )
 
     def paragraph(value: object, style=small):
         return Paragraph(escape(str(value or "")), style)
 
-    logo: object = paragraph("Columbia University", styles["Heading3"])
+    logo: object = paragraph("Columbia University", normal)
     if logo_path and logo_path.exists():
-        logo = Image(str(logo_path), width=2.2 * inch, height=0.7 * inch, kind="proportional")
+        logo = Image(str(logo_path))
+        scale = min(2.2 * inch / logo.imageWidth, 0.9 * inch / logo.imageHeight, 1.0)
+        logo.drawWidth = logo.imageWidth * scale
+        logo.drawHeight = logo.imageHeight * scale
         logo.hAlign = "RIGHT"
     payment_block = [logo]
     if _uses_check_payment(document):
+        address = "<br/>" + "<br/>".join(escape(line) for line in PAYMENT_ADDRESS_LINES)
+        note = "<br/>".join(escape(line) for line in PAYMENT_NOTE_LINES)
         payment_block.extend(
             [
-                Spacer(1, 5),
-                Paragraph(_payment_instructions_markup(), payment_instructions),
+                Spacer(1, 8),
+                Paragraph(address, payment_bold),
+                Spacer(1, 8),
+                Paragraph(note, payment_italic),
             ]
         )
+    detail_rows = [
+        [Paragraph(escape(line), header_details), "", ""]
+        for line in _invoice_detail_lines(document)
+    ]
     header = Table(
         [
             [
-                Paragraph(_invoice_details_markup(document), header_details),
-                Paragraph("<b>Columbia Nano Initiative</b><br/>Facility Usage Invoice", title),
+                Spacer(1, 1),
+                Paragraph(
+                    '<font size="18"><b>Columbia Nano Initiative</b></font><br/>'
+                    '<font size="15"><b>Facility Usage Invoice</b></font>',
+                    title,
+                ),
                 payment_block,
-            ]
+            ],
+            *detail_rows,
         ],
-        colWidths=[pdf.width * 0.35, pdf.width * 0.35, pdf.width * 0.30],
-        style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("ALIGN", (2, 0), (2, 0), "RIGHT")]),
+        colWidths=[
+            (pdf.width - 2.6 * inch) / 2,
+            (pdf.width - 2.6 * inch) / 2,
+            2.6 * inch,
+        ],
+        style=TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (1, -1), 0),
+                ("BOTTOMPADDING", (2, 0), (2, -1), 2),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("ALIGN", (2, 0), (2, 0), "RIGHT"),
+                *(("SPAN", (0, row), (1, row)) for row in range(1, len(detail_rows) + 1)),
+                ("ALIGN", (0, 1), (1, len(detail_rows)), "LEFT"),
+                ("SPAN", (2, 0), (2, len(detail_rows))),
+            ]
+        ),
     )
     story: list[object] = [header, Spacer(1, 8)]
 

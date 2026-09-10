@@ -42,10 +42,11 @@ class InvoiceCharacterizationTests(unittest.TestCase):
     def test_excel_and_pdf_render_from_same_document(self) -> None:
         document = self.document()
         header_markup = _invoice_details_markup(document)
-        self.assertEqual(header_markup.count("<br/>"), 3)
+        self.assertEqual(header_markup.count("<br/>"), 4)
         self.assertNotIn("&lt;br/&gt;", header_markup)
-        self.assertIn("<b>PI:</b> PI, Ada", header_markup)
-        self.assertIn("<b>Email:</b> ada.pi@example.edu", header_markup)
+        self.assertIn("<b>PI: PI, Ada</b>", header_markup)
+        self.assertIn("<b>Email: ada.pi@example.edu</b>", header_markup)
+        self.assertIn("<b>Generated:", header_markup)
         with tempfile.TemporaryDirectory() as folder:
             folder_path = Path(folder)
             xlsx_path = folder_path / "invoice.xlsx"
@@ -71,7 +72,7 @@ class InvoiceCharacterizationTests(unittest.TestCase):
 
         self.assertIn("Please Mail Checks To:", payment_markup)
         self.assertIn("530 W 120th Street, RM 1001", payment_markup)
-        self.assertIn("Mail Code 8903 - CEPSR", payment_markup)
+        self.assertIn("Mail Code 8903 - CEPSR Building", payment_markup)
         self.assertIn("Email: cnibilling@columbia.edu", payment_markup)
         self.assertIn("Checks Only! Make payable to", payment_markup)
         self.assertIn("Payment due within 30 days of", payment_markup)
