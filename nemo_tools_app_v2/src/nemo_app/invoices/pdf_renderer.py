@@ -14,6 +14,8 @@ from nemo_app.billing.constants import DESIRED_LAB_ORDER, DETAIL_SECTION_ORDER
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.text import month_label
 
+CHECK_PAYMENT_APPLICATIONS = frozenset({"industry", "external academic"})
+
 
 def money(value: float) -> str:
     return f"${float(value):,.2f}"
@@ -27,6 +29,34 @@ def _invoice_details_markup(document: InvoiceDocument) -> str:
         ("Invoice #", document.invoice_number),
     )
     return "<br/>".join(f"<b>{escape(label)}:</b> {escape(str(value))}" for label, value in details)
+
+
+def _payment_instructions_markup() -> str:
+    mailing_address = (
+        "Please Mail Checks To:",
+        "Columbia Nano Initiative",
+        "530 W 120th Street, RM 1001",
+        "Mail Code 8903 - CEPSR",
+        "Building",
+        "New York, NY 10027",
+        "Email: cnibilling@columbia.edu",
+    )
+    payment_note = (
+        "Checks Only! Make payable to",
+        "Columbia University.",
+        "Payment due within 30 days of",
+        "receipt.",
+    )
+    address = "<br/>".join(escape(line) for line in mailing_address)
+    note = "<br/>".join(escape(line) for line in payment_note)
+    return f"<b>{address}</b><br/><br/><i>{note}</i>"
+
+
+def _uses_check_payment(document: InvoiceDocument) -> bool:
+    return any(
+        " ".join(project.application.split()).casefold() in CHECK_PAYMENT_APPLICATIONS
+        for project in document.projects
+    )
 
 
 def _footer(canvas, document) -> None:
@@ -70,6 +100,12 @@ def render_invoice_pdf(
         "InvoiceHeading", parent=styles["Heading2"], fontSize=11, spaceBefore=9, spaceAfter=4
     )
     title = ParagraphStyle("InvoiceTitle", parent=styles["Title"], fontSize=16, alignment=TA_CENTER)
+    payment_instructions = ParagraphStyle(
+        "InvoicePaymentInstructions",
+        parent=small,
+        fontSize=8,
+        leading=8,
+    )
 
     def paragraph(value: object, style=small):
         return Paragraph(escape(str(value or "")), style)
@@ -77,12 +113,21 @@ def render_invoice_pdf(
     logo: object = paragraph("Columbia University", styles["Heading3"])
     if logo_path and logo_path.exists():
         logo = Image(str(logo_path), width=2.2 * inch, height=0.7 * inch, kind="proportional")
+        logo.hAlign = "RIGHT"
+    payment_block = [logo]
+    if _uses_check_payment(document):
+        payment_block.extend(
+            [
+                Spacer(1, 5),
+                Paragraph(_payment_instructions_markup(), payment_instructions),
+            ]
+        )
     header = Table(
         [
             [
                 Paragraph(_invoice_details_markup(document), header_details),
                 Paragraph("<b>Columbia Nano Initiative</b><br/>Facility Usage Invoice", title),
-                logo,
+                payment_block,
             ]
         ],
         colWidths=[pdf.width * 0.35, pdf.width * 0.35, pdf.width * 0.30],

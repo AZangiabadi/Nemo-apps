@@ -9,14 +9,20 @@ from openpyxl import load_workbook
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.prepare import prepare_usage_dataframe
 from nemo_app.invoices.excel_renderer import render_invoice_workbook
-from nemo_app.invoices.pdf_renderer import _invoice_details_markup, render_invoice_pdf
+from nemo_app.invoices.pdf_renderer import (
+    _invoice_details_markup,
+    _payment_instructions_markup,
+    _uses_check_payment,
+    render_invoice_pdf,
+)
 from tests.fixtures import usage_frame
 
 
 class InvoiceCharacterizationTests(unittest.TestCase):
-    def document(self) -> InvoiceDocument:
+    def document(self, application: str = "Local") -> InvoiceDocument:
         prepared = prepare_usage_dataframe(usage_frame(), apply_caps=False)
         prepared = prepared.loc[~prepared["IsMissedReservation"]].iloc[:3].copy()
+        prepared["Application identifier"] = application
         return InvoiceDocument.from_frame(
             prepared,
             pi_key="ada.pi@example.edu",
@@ -59,6 +65,22 @@ class InvoiceCharacterizationTests(unittest.TestCase):
             finally:
                 workbook.close()
             self.assertGreater(pdf_path.stat().st_size, 1000)
+
+    def test_pdf_includes_check_payment_instructions(self) -> None:
+        payment_markup = _payment_instructions_markup()
+
+        self.assertIn("Please Mail Checks To:", payment_markup)
+        self.assertIn("530 W 120th Street, RM 1001", payment_markup)
+        self.assertIn("Mail Code 8903 - CEPSR", payment_markup)
+        self.assertIn("Email: cnibilling@columbia.edu", payment_markup)
+        self.assertIn("Checks Only! Make payable to", payment_markup)
+        self.assertIn("Payment due within 30 days of", payment_markup)
+
+    def test_check_payment_instructions_only_apply_to_external_invoices(self) -> None:
+        self.assertTrue(_uses_check_payment(self.document("Industry")))
+        self.assertTrue(_uses_check_payment(self.document("External Academic")))
+        self.assertFalse(_uses_check_payment(self.document("Local")))
+        self.assertFalse(_uses_check_payment(self.document("CDG")))
 
 
 if __name__ == "__main__":
