@@ -4,9 +4,10 @@
 {% block content %}
 <section class="panel accented" style="--accent:#9a3412">
   <h1>NEMO Invoice Generator</h1>
-  <p>Excel and PDF outputs use the same calculated invoice document, keeping totals aligned.</p>
+  <p>Generate invoices with reusable defaults, or customize the PDF for another lab or institution.</p>
   <form method="post" enctype="multipart/form-data">
     {{ csrf() }}
+    <input type="hidden" name="customization_present" value="1">
     {% if read_only_api_configured %}
       <p class="help">This read-only tool uses the protected NEMO service account.</p>
     {% else %}
@@ -25,6 +26,88 @@
       <label class="choice"><input type="checkbox" name="apply_hourly_caps"> Apply hourly/session caps</label>
       <p class="help">Project caps always apply. When hourly caps are ignored, the BET analyzer retains its required 48-hour limit.</p>
     </fieldset>
+    <details class="config-section" open>
+      <summary>Branding and PDF appearance</summary>
+      <div class="config-body form-grid">
+        <label for="main_title">Main title
+          <input id="main_title" type="text" name="main_title" value="{{ defaults.main_title }}" maxlength="120" required>
+        </label>
+        <label for="subtitle">Subtitle
+          <input id="subtitle" type="text" name="subtitle" value="{{ defaults.subtitle }}" maxlength="120" required>
+        </label>
+        <label for="logo_file">Logo
+          <input id="logo_file" type="file" name="logo_file" accept=".png,.jpg,.jpeg,image/png,image/jpeg">
+          <span class="help">Leave empty to use the server's default logo.</span>
+        </label>
+        <label for="font_family">Font family
+          <select id="font_family" name="font_family">
+            {% for value, label in font_options.items() %}
+              <option value="{{ value }}" {% if value == defaults.font_family %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label for="font_size">Font size
+          <select id="font_size" name="font_size">
+            {% for value, label in font_size_options.items() %}
+              <option value="{{ value }}" {% if value == defaults.font_size %}selected{% endif %}>{{ label }} ({{ value }} pt body)</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label for="color_theme">Color theme
+          <select id="color_theme" name="color_theme">
+            {% for value, label in color_theme_options.items() %}
+              <option value="{{ value }}" {% if value == defaults.color_theme %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </details>
+    <details class="config-section">
+      <summary>Invoice content</summary>
+      <div class="config-body">
+        <label for="lab_sections">Lab tables and display names
+          <textarea id="lab_sections" name="lab_sections" rows="7">{{ default_lab_sections }}</textarea>
+          <span class="help">One source lab per line. Rename a heading with <code>Source name = Display name</code>. Reorder or remove lines to control the PDF tables.</span>
+        </label>
+        <fieldset>
+          <legend>Billing information shown</legend>
+          {% for value, label in billing_field_options.items() %}
+            <label class="choice"><input type="checkbox" name="billing_fields" value="{{ value }}" {% if value in defaults.billing_fields %}checked{% endif %}> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+        <fieldset>
+          <legend>Detail columns shown</legend>
+          {% for value, label in detail_column_options.items() %}
+            <label class="choice"><input type="checkbox" name="detail_columns" value="{{ value }}" {% if value in defaults.detail_columns %}checked{% endif %}> {{ label }}</label>
+          {% endfor %}
+        </fieldset>
+        <label for="payment_instructions">Payment instructions
+          <textarea id="payment_instructions" name="payment_instructions" rows="10" maxlength="2000">{{ defaults.payment_instructions }}</textarea>
+          <span class="help">The first paragraph is bold and the second is italic. By default this appears only on Industry and External Academic invoices. Leave it empty to hide it.</span>
+        </label>
+      </div>
+    </details>
+    <details class="config-section">
+      <summary>Fees and invoice numbering</summary>
+      <div class="config-body">
+        <label class="choice"><input type="checkbox" name="include_access_fee" checked> Include access fee</label>
+        <div class="form-grid fee-grid">
+          {% for application, field_name in access_fee_fields.items() %}
+            <label for="{{ field_name }}">{{ application }} access fee
+              <input id="{{ field_name }}" type="number" name="{{ field_name }}" min="0" max="1000000" step="0.01" value="{{ '%.2f'|format(defaults.access_fees[application]) }}">
+            </label>
+          {% endfor %}
+        </div>
+        <label for="invoice_number_format">Invoice number format
+          <select id="invoice_number_format" name="invoice_number_format">
+            {% for value, label in invoice_number_options.items() %}
+              <option value="{{ value }}" {% if value == defaults.invoice_number_format %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <p class="help">Access fees and invoice numbers are shared by the Excel and PDF versions so their totals and identifiers stay aligned.</p>
+      </div>
+    </details>
     <div class="actions"><button type="submit">Queue invoice job</button><a class="button secondary" href="/">Back home</a></div>
   </form>
 </section>

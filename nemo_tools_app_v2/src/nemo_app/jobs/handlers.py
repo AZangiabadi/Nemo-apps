@@ -7,6 +7,7 @@ from typing import Any
 
 from nemo_app.config import AppConfig
 from nemo_app.imports.user_importer import run_import
+from nemo_app.invoices.customization import InvoiceCustomization
 from nemo_app.invoices.excel_parser import convert_excel_to_pdf
 from nemo_app.invoices.service import InvoiceOptions, generate_invoices
 from nemo_app.nemo.cache import JsonTTLCache
@@ -80,14 +81,22 @@ class JobContext:
 
 def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
     options = InvoiceOptions(**context.job.payload["options"])
+    customization = InvoiceCustomization.from_mapping(context.job.payload.get("customization"))
+    logo_input = context.job.payload.get("logo_input")
+    logo_path = (
+        context.input(str(logo_input))
+        if logo_input
+        else _asset(context.config, "Columbia_logo.png")
+    )
     result = generate_invoices(
         context.input(context.job.payload["input"]),
         context.output_dir,
         metadata=context.metadata(),
         options=options,
-        logo_path=_asset(context.config, "Columbia_logo.png"),
+        logo_path=logo_path,
         progress=context.progress,
         timezone=context.config.timezone,
+        customization=customization,
     )
     return (
         f"Created {result.invoice_count} invoice(s)",

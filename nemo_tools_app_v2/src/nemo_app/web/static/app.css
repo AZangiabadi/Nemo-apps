@@ -142,12 +142,20 @@ nav a:hover { background: #ecf4f6; }
 form { display: grid; gap: 17px; }
 label { display: grid; gap: 6px; font-weight: 750; }
 .choice { display: inline-flex; grid-auto-flow: column; align-items: center; justify-content: start; gap: 8px; font-weight: 650; }
-input[type="text"], input[type="password"], input[type="file"] {
+input[type="text"], input[type="password"], input[type="file"], input[type="number"], select, textarea {
   width: 100%; padding: 11px 13px; border: 1px solid #c7d0dc; border-radius: 8px; background: white; font: inherit;
 }
-input:focus { outline: 3px solid rgb(29 78 216 / 16%); border-color: #7da2ef; }
+textarea { resize: vertical; line-height: 1.45; }
+input:focus, select:focus, textarea:focus { outline: 3px solid rgb(29 78 216 / 16%); border-color: #7da2ef; }
 fieldset { display: flex; flex-wrap: wrap; gap: 16px; margin: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; }
 legend { padding: 0 7px; font-weight: 800; }
+.config-section { overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.config-section > summary { padding: 14px 16px; color: var(--brand); font-weight: 800; cursor: pointer; }
+.config-section[open] > summary { border-bottom: 1px solid var(--line); background: #f3f6fa; }
+.config-body { display: grid; gap: 16px; padding: 16px; }
+.form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid > .help, .form-grid > label > .help { font-weight: 400; }
+.fee-grid { grid-template-columns: repeat(4, minmax(130px, 1fr)); }
 button, .button {
   display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 10px 14px;
   border: 0; border-radius: 7px; color: white; background: var(--brand); font: inherit; font-weight: 750; text-decoration: none; cursor: pointer;
@@ -190,6 +198,7 @@ th { color: var(--muted); background: #f3f6fa; font-size: .78rem; letter-spacing
   .site-header { align-items: flex-start; flex-direction: column; }
   nav { justify-content: flex-start; }
   .stats { grid-template-columns: 1fr; }
+  .form-grid, .fee-grid { grid-template-columns: 1fr; }
   .workspace-heading { align-items: flex-start; flex-direction: column; }
   .tool-layout { grid-template-columns: 1fr; }
   .tool-rail { position: static; grid-template-columns: repeat(4, minmax(0, 1fr)); }

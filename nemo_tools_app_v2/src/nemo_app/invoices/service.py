@@ -19,6 +19,7 @@ from nemo_app.billing.prepare import load_usage_csv
 from nemo_app.billing.text import month_label, safe_filename
 from nemo_app.nemo.metadata import MetadataRepository, project_pi
 
+from .customization import DEFAULT_INVOICE_CUSTOMIZATION, InvoiceCustomization
 from .excel_renderer import render_invoice_workbook
 from .excel_styles import CURRENCY_FORMAT, autosize_columns, style_table_header
 from .pdf_renderer import render_invoice_pdf
@@ -44,9 +45,24 @@ class InvoiceResult:
     row_count: int
 
 
-def make_invoice_number(period: str, sequence: int, generated_at: dt.datetime) -> str:
+def make_invoice_number(
+    period: str,
+    sequence: int,
+    generated_at: dt.datetime,
+    number_format: str = "timestamped",
+) -> str:
     period_code = period.replace("-", "")[-4:]
-    return f"CNI-{period_code}-{generated_at.strftime('%d%H%M')}-{sequence:03d}"
+    calendar_month = period.replace("-", "")
+    formats = {
+        "timestamped": f"CNI-{period_code}-{generated_at.strftime('%d%H%M')}-{sequence:03d}",
+        "monthly": f"CNI-{period_code}-{sequence:03d}",
+        "calendar": f"INV-{calendar_month}-{sequence:04d}",
+        "yearly": f"INV-{period[:4]}-{sequence:05d}",
+    }
+    try:
+        return formats[number_format]
+    except KeyError as exc:
+        raise ValueError(f"Unknown invoice number format {number_format!r}") from exc
 
 
 def _has_invoiceable_activity(frame: pd.DataFrame) -> bool:
@@ -131,9 +147,11 @@ def generate_invoices(
     progress: ProgressCallback | None = None,
     timezone: dt.tzinfo | None = None,
     generated_at: dt.datetime | None = None,
+    customization: InvoiceCustomization | None = None,
 ) -> InvoiceResult:
     if not options.generate_excel and not options.generate_pdf:
         raise ValueError("Select at least one invoice output format.")
+    customization = customization or DEFAULT_INVOICE_CUSTOMIZATION
     output_dir.mkdir(parents=True, exist_ok=True)
     projects = metadata.projects(use_cache=options.use_cache)
     tools = metadata.tools(use_cache=options.use_cache)
@@ -204,8 +222,16 @@ def generate_invoices(
             pi_name=name,
             pi_email=email,
             period=period,
-            invoice_number=make_invoice_number(period, sequences[period], generated_at),
+            invoice_number=make_invoice_number(
+                period,
+                sequences[period],
+                generated_at,
+                customization.invoice_number_format,
+            ),
             generated_at=generated_at,
+            access_fee_by_application=(
+                customization.access_fees if customization.include_access_fee else {}
+            ),
         )
         documents.append(document)
         base_name = f"{safe_filename(name)} {month_label(period)}"
@@ -220,7 +246,12 @@ def generate_invoices(
             excel_count += 1
         if options.generate_pdf:
             files.append(
-                render_invoice_pdf(document, output_dir / f"{candidate}.pdf", logo_path=logo_path)
+                render_invoice_pdf(
+                    document,
+                    output_dir / f"{candidate}.pdf",
+                    logo_path=logo_path,
+                    customization=customization,
+                )
             )
             pdf_count += 1
         if progress:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import pandas as pd
@@ -75,6 +75,7 @@ class InvoiceDocument:
         invoice_number: str,
         generated_at: dt.datetime | None = None,
         access_fee_override: float | None = None,
+        access_fee_by_application: Mapping[str, float] | None = None,
     ) -> InvoiceDocument:
         lines = frame.copy().reset_index(drop=True)
         lab_totals = {
@@ -82,9 +83,11 @@ class InvoiceDocument:
             for lab, cost in lines.groupby("Lab", dropna=False)["Cost"].sum().items()
         }
         access_fee = (
-            float(access_fee_override) if access_fee_override is not None else _access_fee(lines)
+            float(access_fee_override)
+            if access_fee_override is not None
+            else _access_fee(lines, access_fee_by_application)
         )
-        fee_project = _access_fee_project(lines)
+        fee_project = _access_fee_project(lines) if access_fee else None
         projects = tuple(_project_summaries(lines, access_fee, fee_project))
         return cls(
             lines=lines,
@@ -101,15 +104,20 @@ class InvoiceDocument:
         )
 
 
-def _access_fee(frame: pd.DataFrame) -> float:
+def _access_fee(
+    frame: pd.DataFrame,
+    access_fee_by_application: Mapping[str, float] | None = None,
+) -> float:
     real_usage = frame.loc[frame["IsToolUsageCharge"].fillna(False)]
     if real_usage.empty:
         return 0.0
+    fees = (
+        ACCESS_FEE_BY_APPLICATION
+        if access_fee_by_application is None
+        else access_fee_by_application
+    )
     return max(
-        (
-            ACCESS_FEE_BY_APPLICATION.get(str(value), 0.0)
-            for value in real_usage["Application identifier"]
-        ),
+        (float(fees.get(str(value), 0.0)) for value in real_usage["Application identifier"]),
         default=0.0,
     )
 
@@ -133,6 +141,14 @@ def _project_summaries(
     access_fee: float,
     fee_project: tuple[str, str] | None,
 ) -> Iterable[ProjectSummary]:
+    labs = tuple(
+        dict.fromkeys(
+            [
+                *DESIRED_LAB_ORDER,
+                *(str(value) for value in frame["Lab"].dropna().unique()),
+            ]
+        )
+    )
     group_columns = ["Project", "Application identifier"]
     for (project, application), group in frame.groupby(group_columns, dropna=False):
         staff = group["Item_norm"].astype(str).str.lower().eq("staff time")
@@ -140,7 +156,7 @@ def _project_summaries(
             "IsConsumable", pd.Series(False, index=group.index, dtype=bool)
         ).fillna(False)
         lab_totals: dict[str, float] = {}
-        for lab in DESIRED_LAB_ORDER:
+        for lab in labs:
             if lab == "Consumable":
                 rows = consumable & ~staff
             else:
