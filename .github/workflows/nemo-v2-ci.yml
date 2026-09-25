@@ -6,16 +6,10 @@ on:
     paths:
       - ".github/workflows/nemo-v2-ci.yml"
       - "nemo_tools_app_v2/**"
-      - "Columbia_logo.png"
-      - "nemo_logo.jpeg"
-      - "Account-project-user-adding-Nemo.xlsx"
   pull_request:
     paths:
       - ".github/workflows/nemo-v2-ci.yml"
       - "nemo_tools_app_v2/**"
-      - "Columbia_logo.png"
-      - "nemo_logo.jpeg"
-      - "Account-project-user-adding-Nemo.xlsx"
 
 permissions:
   contents: read
@@ -78,4 +72,5 @@ jobs:
         run: docker compose config --quiet
 
       - name: Build the production image
-        run: docker build --file nemo_tools_app_v2/Dockerfile .
+        working-directory: nemo_tools_app_v2
+        run: docker build --file Dockerfile .
