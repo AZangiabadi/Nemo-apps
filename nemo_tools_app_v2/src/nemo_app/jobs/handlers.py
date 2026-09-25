@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from nemo_app.config import AppConfig
+from nemo_app.imports.qualification_importer import run_qualification_import
 from nemo_app.imports.user_importer import run_import
 from nemo_app.invoices.customization import InvoiceCustomization
 from nemo_app.invoices.excel_parser import convert_excel_to_pdf
@@ -120,6 +121,18 @@ def _user_import(context: JobContext) -> tuple[str, dict[str, Any]]:
     )
 
 
+def _qualification_import(context: JobContext) -> tuple[str, dict[str, Any]]:
+    dry_run = bool(context.job.payload.get("dry_run", True))
+    result = run_qualification_import(
+        context.input(context.job.payload["input"]),
+        client=context.client(dry_run=dry_run),
+        progress=context.progress,
+        log=context.log,
+    )
+    action = "Dry run complete" if dry_run else "Qualification import complete"
+    return action, {"files": [], "data": _result_data(result, omit=())}
+
+
 def _excel_pdf(context: JobContext) -> tuple[str, dict[str, Any]]:
     path = convert_excel_to_pdf(
         context.input(context.job.payload["input"]),
@@ -198,6 +211,7 @@ def _asset(config: AppConfig, filename: str) -> Path | None:
 HANDLERS: dict[str, Callable[[JobContext], tuple[str, dict[str, Any]]]] = {
     "invoice": _invoice,
     "user_import": _user_import,
+    "qualification_import": _qualification_import,
     "excel_pdf": _excel_pdf,
     "detailed_financials": _detailed,
     "usage_caps": _usage_caps,

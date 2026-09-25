@@ -21,6 +21,13 @@ TOOLS = (
         "#0f766e",
     ),
     ToolDefinition(
+        "qualification-import",
+        "Qualification Batch Import",
+        "Create or update NEMO tool qualifications from an Excel spreadsheet.",
+        "/tools/qualification-import",
+        "#0f766e",
+    ),
+    ToolDefinition(
         "invoices",
         "NEMO Invoice Generator",
         "Generate matching Excel and PDF invoices from one billing model.",

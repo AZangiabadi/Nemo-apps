@@ -35,6 +35,7 @@ class WebSmokeTests(unittest.TestCase):
             for path in (
                 "/",
                 "/tools/user-import",
+                "/tools/qualification-import",
                 "/tools/invoices",
                 "/tools/detailed-financials",
                 "/tools/usage-caps",
@@ -57,6 +58,7 @@ class WebSmokeTests(unittest.TestCase):
             page = app.test_client().get("/").get_data(as_text=True)
             titles = (
                 "User/Account/Project Batch Import",
+                "Qualification Batch Import",
                 "NEMO Invoice Generator",
                 "Detailed Financials",
                 "Usage Cap Analysis",
@@ -72,6 +74,41 @@ class WebSmokeTests(unittest.TestCase):
             card_area = page[cards_start:]
             positions = [card_area.index(title) for title in titles]
             self.assertEqual(positions, sorted(positions))
+
+    def test_qualification_import_is_queued_and_token_is_encrypted(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            config = self._config(Path(folder))
+            app = create_app(config)
+            app.config.update(TESTING=True)
+            client = app.test_client()
+            client.get("/tools/qualification-import")
+            with client.session_transaction() as session:
+                csrf = session["csrf_token"]
+
+            response = client.post(
+                "/tools/qualification-import",
+                data={
+                    "csrf_token": csrf,
+                    "api_token": "qualification-secret-token",
+                    "spreadsheet": (BytesIO(b"test workbook"), "qualifications.xlsx"),
+                    "dry_run": "on",
+                },
+                content_type="multipart/form-data",
+            )
+
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("/jobs/", response.headers["Location"])
+            self.assertNotIn(b"qualification-secret-token", config.database_path.read_bytes())
+            job = app.extensions["job_store"].claim_next("test-worker")
+            self.assertIsNotNone(job)
+            assert job is not None
+            self.assertEqual(job.kind, "qualification_import")
+            self.assertTrue(job.payload["dry_run"])
+            self.assertEqual(job.secrets["api_token"], "qualification-secret-token")
+
+            template = client.get("/tools/qualification-import/template.xlsx")
+            self.assertEqual(template.status_code, 200)
+            self.assertGreater(len(template.data), 4_000)
 
     def test_upload_is_queued_and_token_is_encrypted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

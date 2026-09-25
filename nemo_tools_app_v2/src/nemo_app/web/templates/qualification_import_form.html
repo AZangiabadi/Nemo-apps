@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf, token %}
+{% block title %}Qualification Batch Import{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#0f766e">
+  <h1>Qualification Batch Import</h1>
+  <p>Create new NEMO tool qualifications or update the qualification date for existing ones.</p>
+  <p><a href="{{ url_for('administration.qualification_import_template') }}">Download the Excel template</a></p>
+  <form method="post" enctype="multipart/form-data">
+    {{ csrf() }}
+    {{ token() }}
+    <div>
+      <label for="spreadsheet">Qualification spreadsheet</label>
+      <input id="spreadsheet" type="file" name="spreadsheet" accept=".xlsx" required>
+    </div>
+    <fieldset>
+      <legend>Required spreadsheet columns</legend>
+      <p class="help">Column B: NEMO tool ID. Column C: qualification date. Column D: the user's NEMO email address. Column A is ignored and may contain notes.</p>
+    </fieldset>
+    <label class="choice"><input type="checkbox" name="dry_run" checked> Dry run only</label>
+    <p class="help">A dry run validates users, tools, existing qualifications, and proposed changes without writing to NEMO. Always review it before running a live import.</p>
+    <div class="actions"><button type="submit">Queue qualification import</button><a class="button secondary" href="/">Back home</a></div>
+  </form>
+</section>
+{% endblock %}
