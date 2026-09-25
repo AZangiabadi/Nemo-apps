@@ -2,8 +2,8 @@ name: nemo-tools-hub
 
 x-app: &app
   build:
-    context: ..
-    dockerfile: nemo_tools_app_v2/Dockerfile
+    context: .
+    dockerfile: Dockerfile
   environment:
     NEMO_DATA_DIR: /app/data
     NEMO_ASSET_DIR: /app/assets
