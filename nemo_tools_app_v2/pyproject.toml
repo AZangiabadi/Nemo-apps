@@ -11,11 +11,11 @@ requires-python = ">=3.12"
 dependencies = [
     "cryptography>=50.0.0,<51",
     "flask>=3.1,<4",
-    "gunicorn>=23,<24",
+    "gunicorn>=23,<27",
     "openpyxl>=3.1,<4",
-    "pandas>=2.2,<3",
+    "pandas>=2.2,<4",
     "python-dotenv>=1.0,<2",
-    "reportlab>=4.2,<5",
+    "reportlab>=4.2,<6",
     "requests>=2.32,<3",
 ]
 
