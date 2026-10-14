@@ -58,6 +58,34 @@ class _DashboardClient:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_cross_month_usage_is_combined_with_completion_month_invoice(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "usage.csv"
+            frame = usage_frame().iloc[[0]].copy()
+            cross_month = frame.iloc[0].copy()
+            cross_month["Start time"] = "04/30/2026 @ 11:00 PM"
+            cross_month["End time"] = "05/01/2026 @ 01:00 AM"
+            current_month = frame.iloc[0].copy()
+            current_month["Start time"] = "05/02/2026 @ 09:00 AM"
+            current_month["End time"] = "05/02/2026 @ 10:00 AM"
+            source_frame = frame.iloc[0:0].copy()
+            source_frame.loc[0] = cross_month
+            source_frame.loc[1] = current_month
+            source_frame.to_csv(source, index=False)
+
+            result = generate_invoices(
+                source,
+                root / "output",
+                metadata=_Metadata(),  # type: ignore[arg-type]
+                options=InvoiceOptions(generate_pdf=False, make_zip=True),
+            )
+
+            self.assertEqual(result.invoice_count, 1)
+            self.assertEqual(result.files[0].name, "CNI-Nemo-Invoices-MAY2026.zip")
+            with zipfile.ZipFile(result.files[0]) as archive:
+                self.assertIn("PI, Ada MAY2026.xlsx", archive.namelist())
+
     def test_approved_adjustment_changes_time_cost_and_project(self) -> None:
         source = usage_frame().iloc[[0]].copy()
         adjusted = apply_adjustment_requests(

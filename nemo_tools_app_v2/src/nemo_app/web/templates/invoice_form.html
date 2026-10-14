@@ -13,7 +13,14 @@
     {% else %}
       {{ token() }}
     {% endif %}
-    <div><label for="csv_file">Usage CSV</label><input id="csv_file" type="file" name="csv_file" accept=".csv" required></div>
+    <fieldset>
+      <legend>Usage source</legend>
+      <label class="choice"><input type="radio" name="source" value="api" checked> Fetch monthly billing from NEMO</label>
+      <label class="choice"><input type="radio" name="source" value="csv"> Upload a usage CSV</label>
+      <div id="api-source"><label for="billing_month">Billing month and year</label><input id="billing_month" type="month" name="billing_month" value="{{ default_billing_month }}" required></div>
+      <div id="csv-source" hidden><label for="csv_file">Usage CSV</label><input id="csv_file" type="file" name="csv_file" accept=".csv"></div>
+      <p class="help">Projects marked no charge are excluded. API invoices use NEMO's calculated rates and costs and include a downloadable source CSV.</p>
+    </fieldset>
     <fieldset>
       <legend>Output</legend>
       <label class="choice"><input type="checkbox" name="generate_excel" checked> Excel</label>
@@ -111,4 +118,18 @@
     <div class="actions"><button type="submit">Queue invoice job</button><a class="button secondary" href="/">Back home</a></div>
   </form>
 </section>
+{% endblock %}
+{% block scripts %}
+{{ super() }}
+<script>
+  function updateInvoiceSource() {
+    const api = document.querySelector('input[name="source"]:checked').value === 'api';
+    document.getElementById('api-source').hidden = !api;
+    document.getElementById('csv-source').hidden = api;
+    document.getElementById('billing_month').required = api;
+    document.getElementById('csv_file').required = !api;
+  }
+  document.querySelectorAll('input[name="source"]').forEach(input => input.addEventListener('change', updateInvoiceSource));
+  updateInvoiceSource();
+</script>
 {% endblock %}

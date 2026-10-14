@@ -1,5 +1,14 @@
 # Refactored NEMO Tools Hub
 
+Invoice generation defaults to fetching a selected month from
+`/api/billing/billing_data/`, using the protected read-only service token.
+The token's NEMO account needs `NEMO.use_billing_api`. Projects marked
+`no_charge` are excluded from API billing and CSV invoice input. CSV upload
+remains available as an alternative. API jobs provide `billing_source.csv`
+alongside the invoice files for reviewing the fetched quantities, rates, and
+costs. The existing invoice caps, access fees, and appearance settings apply
+to either input source.
+
 This is an isolated, from-scratch rewrite of the NEMO application. The legacy
 Python files in the repository root are intentionally untouched, so this version
 can be tested and rolled out without disrupting the current app.

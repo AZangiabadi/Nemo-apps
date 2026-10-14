@@ -11,6 +11,7 @@ from nemo_app.imports.user_importer import run_import
 from nemo_app.invoices.customization import InvoiceCustomization
 from nemo_app.invoices.excel_parser import convert_excel_to_pdf
 from nemo_app.invoices.service import InvoiceOptions, generate_invoices
+from nemo_app.nemo.billing import fetch_billing_dataframe
 from nemo_app.nemo.cache import JsonTTLCache
 from nemo_app.nemo.client import NemoClient
 from nemo_app.nemo.metadata import MetadataRepository
@@ -89,8 +90,18 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         if logo_input
         else _asset(context.config, "Columbia_logo.png")
     )
+    if context.job.payload.get("source") == "api":
+        period = context.job.payload["billing_month"]
+        context.log(f"Fetching {period} billing data from NEMO; no-charge projects excluded")
+        source = fetch_billing_dataframe(
+            context.read_only_client(), period, timezone=context.config.timezone
+        )
+        context.log(f"Loaded {len(source)} billing records")
+        source.to_csv(context.output_dir / "billing_source.csv", index=False)
+    else:
+        source = context.input(context.job.payload["input"])
     result = generate_invoices(
-        context.input(context.job.payload["input"]),
+        source,
         context.output_dir,
         metadata=context.metadata(),
         options=options,
@@ -99,9 +110,12 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         timezone=context.config.timezone,
         customization=customization,
     )
+    result_files = list(result.files)
+    if context.job.payload.get("source") == "api":
+        result_files.append(context.output_dir / "billing_source.csv")
     return (
         f"Created {result.invoice_count} invoice(s)",
-        context.files_result(list(result.files), **_result_data(result)),
+        context.files_result(result_files, **_result_data(result)),
     )
 
 

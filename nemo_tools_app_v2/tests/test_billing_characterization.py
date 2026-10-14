@@ -10,6 +10,24 @@ from tests.fixtures import usage_frame
 
 
 class BillingCharacterizationTests(unittest.TestCase):
+    def test_cross_month_usage_is_billed_in_completion_month(self) -> None:
+        source = usage_frame().iloc[[0]].copy()
+        source.loc[source.index[0], "Start time"] = "04/30/2026 @ 11:00 PM"
+        source.loc[source.index[0], "End time"] = "05/01/2026 @ 01:00 AM"
+
+        prepared = prepare_usage_dataframe(source, apply_caps=False)
+
+        self.assertEqual(prepared.iloc[0]["Period"], "2026-05")
+
+    def test_missing_or_invalid_end_time_falls_back_to_start_month(self) -> None:
+        source = pd.concat([usage_frame().iloc[[0]]] * 2, ignore_index=True)
+        source.loc[0, "End time"] = ""
+        source.loc[1, "End time"] = "03/31/2026 @ 11:00 PM"
+
+        prepared = prepare_usage_dataframe(source, apply_caps=False)
+
+        self.assertEqual(prepared["Period"].tolist(), ["2026-04", "2026-04"])
+
     def test_hourly_cap_preserves_original_values(self) -> None:
         prepared = prepare_usage_dataframe(usage_frame(), apply_caps=False)
         capped = apply_max_session_charge_caps(prepared)

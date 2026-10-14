@@ -77,6 +77,24 @@ def period_for_datetime(value: dt.datetime | None) -> str:
     return value.strftime("%Y-%m") if value else "Unknown"
 
 
+def billing_period_for_interval(
+    start: dt.datetime | None,
+    end: dt.datetime | None,
+) -> str:
+    """Return the month in which a chargeable interval was completed.
+
+    NEMO usage can span a month boundary.  Billing those rows by their start
+    month creates a separate prior-month invoice even though the usage was not
+    completed until the current month.  Prefer a valid end time so the entire
+    charge stays together in the completion month; fall back to the start time
+    when the end is absent or precedes the start because of malformed source
+    data.
+    """
+    if end is not None and (start is None or end >= start):
+        return period_for_datetime(end)
+    return period_for_datetime(start)
+
+
 def month_label(period: str) -> str:
     try:
         year, month = period.split("-")

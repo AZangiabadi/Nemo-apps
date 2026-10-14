@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import asdict
 from pathlib import Path
 
@@ -18,8 +19,9 @@ from nemo_app.invoices.customization import (
     parse_lab_sections,
 )
 from nemo_app.invoices.service import InvoiceOptions
+from nemo_app.nemo.billing import billing_month_dates
 
-from ..common import checkbox, enqueue_upload_job, job_redirect, read_only_api_secrets
+from ..common import checkbox, config, enqueue_upload_job, job_redirect, read_only_api_secrets
 
 invoice_blueprint = Blueprint("invoices", __name__)
 
@@ -42,6 +44,9 @@ def _invoice_form_context() -> dict[str, object]:
         "color_theme_options": COLOR_THEME_OPTIONS,
         "invoice_number_options": INVOICE_NUMBER_OPTIONS,
         "access_fee_fields": ACCESS_FEE_FIELDS,
+        "default_billing_month": (
+            dt.datetime.now(config().timezone).date().replace(day=1) - dt.timedelta(days=1)
+        ).strftime("%Y-%m"),
     }
 
 
@@ -83,8 +88,19 @@ def invoice_form():
 @invoice_blueprint.post("/tools/invoices")
 def invoice_submit():
     upload = request.files.get("csv_file")
+    source = request.form.get("source", "csv")
+    billing_month = request.form.get("billing_month", "")
     api_secrets = read_only_api_secrets()
-    if not upload or not upload.filename:
+    if source not in {"csv", "api"}:
+        flash("Choose API or CSV as the invoice source.", "error")
+        return _render_invoice_form(status=400)
+    if source == "api":
+        try:
+            billing_month_dates(billing_month)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return _render_invoice_form(status=400)
+    elif not upload or not upload.filename:
         flash("Choose a usage CSV.", "error")
         return _render_invoice_form(status=400)
     if api_secrets is None:
@@ -105,7 +121,7 @@ def invoice_submit():
     except (TypeError, ValueError) as exc:
         flash(str(exc), "error")
         return _render_invoice_form(status=400)
-    upload_specs = [(upload, {".csv"})]
+    upload_specs = [(upload, {".csv"})] if source == "csv" else []
     logo_input = None
     logo_upload = request.files.get("logo_file")
     if logo_upload and logo_upload.filename:
@@ -114,13 +130,15 @@ def invoice_submit():
             flash("Upload a PNG or JPEG logo.", "error")
             return _render_invoice_form(status=400)
         upload_specs.append((logo_upload, {".png", ".jpg", ".jpeg"}))
-        logo_input = f"input_2{logo_suffix}"
+        logo_input = f"input_{len(upload_specs)}{logo_suffix}"
     job_id = enqueue_upload_job(
         "invoice",
         title="Invoice generation",
         upload_specs=upload_specs,
         payload={
             "input": "input_1.csv",
+            "source": source,
+            "billing_month": billing_month if source == "api" else None,
             "logo_input": logo_input,
             "options": asdict(options),
             "customization": asdict(customization),

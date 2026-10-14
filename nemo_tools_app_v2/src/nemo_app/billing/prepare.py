@@ -14,7 +14,12 @@ from .caps import (
     billable_user_key,
 )
 from .constants import INVOICE_APPLICATION_IDENTIFIERS, TOOL_TO_LAB
-from .text import normalize_item, parse_minimum_charge, parse_nemo_datetime, period_for_datetime
+from .text import (
+    billing_period_for_interval,
+    normalize_item,
+    parse_minimum_charge,
+    parse_nemo_datetime,
+)
 
 REQUIRED_USAGE_COLUMNS = {
     "Type",
@@ -142,7 +147,10 @@ def prepare_usage_dataframe(
 
     if filter_invoice_quantities:
         result = filter_invoice_quantity_rows(result)
-    result["Period"] = result["Start_dt"].apply(period_for_datetime)
+    result["Period"] = [
+        billing_period_for_interval(start, end)
+        for start, end in zip(result["Start_dt"], result["End_dt"], strict=True)
+    ]
     result["Billable User Key"] = result.apply(billable_user_key, axis=1)
 
     if apply_caps:

@@ -15,7 +15,7 @@ from nemo_app.billing.gold import (
     angstrom_tool_ids,
 )
 from nemo_app.billing.invoice_model import InvoiceDocument
-from nemo_app.billing.prepare import load_usage_csv
+from nemo_app.billing.prepare import prepare_usage_dataframe
 from nemo_app.billing.text import month_label, safe_filename
 from nemo_app.nemo.metadata import MetadataRepository, project_pi
 
@@ -138,7 +138,7 @@ def _archive(paths: list[Path], output_path: Path) -> Path:
 
 
 def generate_invoices(
-    csv_path: Path,
+    csv_path: Path | pd.DataFrame,
     output_dir: Path,
     *,
     metadata: MetadataRepository,
@@ -157,9 +157,11 @@ def generate_invoices(
     tools = metadata.tools(use_cache=options.use_cache)
     adjustments = metadata.adjustments(use_cache=options.use_cache)
     consumables = metadata.consumable_labs(use_cache=options.use_cache)
-    source = pd.read_csv(csv_path)
-    prepared = load_usage_csv(
-        csv_path,
+    source = csv_path.copy() if isinstance(csv_path, pd.DataFrame) else pd.read_csv(csv_path)
+    no_charge_projects = {name for name, project in projects.items() if project.get("no_charge")}
+    source = source.loc[~source["Project"].isin(no_charge_projects)].copy()
+    prepared = prepare_usage_dataframe(
+        source,
         consumable_labs=consumables,
         tools_by_id=tools,
         project_map=projects,
