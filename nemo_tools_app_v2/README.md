@@ -175,6 +175,14 @@ The jumbotron auto-scroll defaults match the legacy app: one pixel every 50 ms.
 Adjust `NEMO_JUMBOTRON_SCROLL_STEP_PX` or
 `NEMO_JUMBOTRON_SCROLL_INTERVAL_MS` to change its display speed.
 
+## Angstrom gold audit
+
+Set `ANGSTROM_LOG_APP_URL` to the private HTTPS address of the Angstrom gold
+thickness dashboard. Each invoice run then adds a gold-deposition audit workbook
+to the output ZIP. The workbook compares Au thickness reported in NEMO usage
+events with the closest same-instrument log records, highlights mismatches and
+missing reports, and totals both measurements.
+
 ## Data lifecycle
 
 Completed and failed job directories are retained for 14 days by default. The

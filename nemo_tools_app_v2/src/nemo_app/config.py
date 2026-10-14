@@ -49,6 +49,7 @@ class AppConfig:
     flask_secret_key: str
     job_secret_key: str
     read_only_api_token: str
+    angstrom_log_app_url: str
     jumbotron_api_token: str
     jumbotron_kiosk_token: str
     jumbotron_refresh_seconds: int
@@ -85,6 +86,7 @@ class AppConfig:
             flask_secret_key=os.environ.get("NEMO_FLASK_SECRET_KEY", "dev-only-secret"),
             job_secret_key=os.environ.get("NEMO_JOB_SECRET_KEY", ""),
             read_only_api_token=os.environ.get("NEMO_READ_ONLY_API_TOKEN", ""),
+            angstrom_log_app_url=os.environ.get("ANGSTROM_LOG_APP_URL", "").rstrip("/"),
             jumbotron_api_token=os.environ.get("NEMO_JUMBOTRON_API_TOKEN", ""),
             jumbotron_kiosk_token=os.environ.get("NEMO_JUMBOTRON_KIOSK_TOKEN", ""),
             jumbotron_refresh_seconds=_env_int("NEMO_JUMBOTRON_REFRESH_SECONDS", 15, minimum=5),
@@ -112,6 +114,8 @@ class AppConfig:
             errors.append("NEMO_JUMBOTRON_KIOSK_TOKEN must contain at least 32 random characters")
         if not self.nemo_base_url.startswith("https://"):
             errors.append("NEMO_BASE_URL must use HTTPS")
+        if self.angstrom_log_app_url and not self.angstrom_log_app_url.startswith("https://"):
+            errors.append("ANGSTROM_LOG_APP_URL must use HTTPS")
         if errors:
             raise ValueError("Invalid production configuration: " + "; ".join(errors))
 

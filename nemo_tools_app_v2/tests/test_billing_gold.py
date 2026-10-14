@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import tempfile
 import unittest
@@ -204,6 +205,23 @@ class GoldDepositionTests(unittest.TestCase):
                 ]
 
         metadata = Metadata()
+
+        class GoldLogClient:
+            def fetch_gold_runs(self, start, end):
+                self.query = (start, end)
+                return [
+                    {
+                        "system": "Angstrom UHV",
+                        "start_time": "2026-07-10T12:10:00",
+                        "thickness_nm": 84.0,
+                        "run_id": "uhv-run-1",
+                        "source": "Pocket 1",
+                        "source_file": "uhv/C_Dep_20260710.csv",
+                        "warning": "",
+                    }
+                ]
+
+        gold_log_client = GoldLogClient()
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             csv_path = root / "usage.csv"
@@ -213,6 +231,7 @@ class GoldDepositionTests(unittest.TestCase):
                 root / "output",
                 metadata=metadata,  # type: ignore[arg-type]
                 options=InvoiceOptions(generate_pdf=False, make_zip=False),
+                gold_log_client=gold_log_client,  # type: ignore[arg-type]
             )
             invoice_path = next(
                 path
@@ -245,7 +264,21 @@ class GoldDepositionTests(unittest.TestCase):
             }
             workbook.close()
 
+            audit_path = next(path for path in result.files if "Gold-Deposition-Audit" in path.name)
+            audit_workbook = load_workbook(audit_path, data_only=False)
+            audit_sheet = audit_workbook["Gold Audit"]
+            audit_values = {
+                audit_sheet["G11"].value,
+                audit_sheet["H11"].value,
+                audit_sheet["M11"].value,
+            }
+            audit_workbook.close()
+
         self.assertEqual(metadata.query[0], {28})
+        self.assertEqual(
+            gold_log_client.query,
+            (dt.date(2026, 7, 10), dt.date(2026, 7, 10)),
+        )
         self.assertIn("Gold deposition (Au) - Angstrom High Vacuum", values)
         self.assertIn("$1.10/nm", values)
         self.assertIn(85.0, values)
@@ -253,6 +286,7 @@ class GoldDepositionTests(unittest.TestCase):
         self.assertEqual(project_summary["Cleanroom"], 170.64)
         self.assertEqual(project_summary["Consumable"], 93.5)
         self.assertEqual(project_summary["Project Total"], 414.14)
+        self.assertEqual(audit_values, {84.0, 85.0, "uhv-run-1"})
 
 
 if __name__ == "__main__":

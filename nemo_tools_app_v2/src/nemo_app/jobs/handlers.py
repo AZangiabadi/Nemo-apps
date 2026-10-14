@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from nemo_app.angstrom.client import AngstromLogClient
 from nemo_app.config import AppConfig
 from nemo_app.imports.qualification_importer import run_qualification_import
 from nemo_app.imports.user_importer import run_import
@@ -90,6 +91,11 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         if logo_input
         else _asset(context.config, "Columbia_logo.png")
     )
+    gold_log_client = (
+        AngstromLogClient(context.config.angstrom_log_app_url)
+        if context.config.angstrom_log_app_url
+        else None
+    )
     if context.job.payload.get("source") == "api":
         period = context.job.payload["billing_month"]
         context.log(f"Fetching {period} billing data from NEMO; no-charge projects excluded")
@@ -108,6 +114,7 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         logo_path=logo_path,
         progress=context.progress,
         timezone=context.config.timezone,
+        gold_log_client=gold_log_client,
         customization=customization,
     )
     result_files = list(result.files)

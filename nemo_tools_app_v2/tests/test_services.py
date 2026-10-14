@@ -134,6 +134,7 @@ class ServiceTests(unittest.TestCase):
             self.assertTrue(any(name.endswith(".xlsx") for name in names))
             self.assertTrue(any(name.endswith(".pdf") for name in names))
             self.assertTrue(any("PI-Contacts" in name for name in names))
+            self.assertTrue(any("Gold-Deposition-Audit" in name for name in names))
 
     def test_multi_period_archive_timestamp_uses_configured_timezone(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

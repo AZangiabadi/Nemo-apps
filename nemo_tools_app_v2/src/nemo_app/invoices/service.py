@@ -9,10 +9,16 @@ from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
 
+from nemo_app.angstrom.client import AngstromLogClient
 from nemo_app.billing.gold import (
     add_gold_deposition_charges,
     angstrom_source_window,
     angstrom_tool_ids,
+)
+from nemo_app.billing.gold_audit import (
+    build_gold_audit_report,
+    logged_gold_runs,
+    reported_gold_usage,
 )
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.prepare import prepare_usage_dataframe
@@ -22,6 +28,7 @@ from nemo_app.nemo.metadata import MetadataRepository, project_pi
 from .customization import DEFAULT_INVOICE_CUSTOMIZATION, InvoiceCustomization
 from .excel_renderer import render_invoice_workbook
 from .excel_styles import CURRENCY_FORMAT, autosize_columns, style_table_header
+from .gold_audit_renderer import render_gold_audit_workbook
 from .pdf_renderer import render_invoice_pdf
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -43,6 +50,8 @@ class InvoiceResult:
     excel_count: int
     pdf_count: int
     row_count: int
+    gold_audit_rows: int
+    gold_audit_exceptions: int
 
 
 def make_invoice_number(
@@ -147,6 +156,7 @@ def generate_invoices(
     progress: ProgressCallback | None = None,
     timezone: dt.tzinfo | None = None,
     generated_at: dt.datetime | None = None,
+    gold_log_client: AngstromLogClient | None = None,
     customization: InvoiceCustomization | None = None,
 ) -> InvoiceResult:
     if not options.generate_excel and not options.generate_pdf:
@@ -171,6 +181,7 @@ def generate_invoices(
     )
     tool_ids = angstrom_tool_ids(tools)
     source_window = angstrom_source_window(source)
+    usage_events: list[dict[str, object]] = []
     if tool_ids and source_window:
         usage_events = metadata.usage_events_for_tools(
             tool_ids,
@@ -184,6 +195,27 @@ def generate_invoices(
             tools_by_id=tools,
             projects_by_name=projects,
         )
+    reported_gold = reported_gold_usage(
+        source,
+        usage_events,
+        tools_by_id=tools,
+        projects_by_name=projects,
+    )
+    log_payload: list[dict[str, object]] = []
+    log_source_status = "Angstrom log application is not configured"
+    if gold_log_client and source_window:
+        log_payload = gold_log_client.fetch_gold_runs(
+            source_window[0].date(),
+            source_window[1].date(),
+        )
+        log_source_status = "Connected to Angstrom log application"
+    elif gold_log_client:
+        log_source_status = "No Angstrom usage rows were present in the uploaded CSV"
+    gold_audit = build_gold_audit_report(
+        reported_gold,
+        logged_gold_runs(log_payload),
+        source_status=log_source_status,
+    )
     prepared = prepared.loc[~prepared["IsMissedReservation"].fillna(False)].copy()
     if prepared.empty:
         raise ValueError("No invoiceable rows remain after filtering the CSV.")
@@ -266,6 +298,12 @@ def generate_invoices(
         else f"CNI-Nemo-Invoice-PI-Contacts-{generated_at.strftime('%Y%m%d-%H%M%S')}.xlsx"
     )
     files.append(_contact_report(documents, output_dir / contact_name))
+    audit_name = (
+        f"CNI-Nemo-Gold-Deposition-Audit-{month_label(periods[0])}.xlsx"
+        if len(periods) == 1
+        else f"CNI-Nemo-Gold-Deposition-Audit-{generated_at.strftime('%Y%m%d-%H%M%S')}.xlsx"
+    )
+    files.append(render_gold_audit_workbook(gold_audit, output_dir / audit_name))
     if options.make_zip:
         archive_name = (
             f"CNI-Nemo-Invoices-{month_label(periods[0])}.zip"
@@ -282,4 +320,6 @@ def generate_invoices(
         excel_count=excel_count,
         pdf_count=pdf_count,
         row_count=len(prepared),
+        gold_audit_rows=len(gold_audit.rows),
+        gold_audit_exceptions=gold_audit.exception_count,
     )
