@@ -58,6 +58,20 @@ class ReportTests(unittest.TestCase):
             finally:
                 workbook.close()
 
+    def test_usage_cap_report_uses_completion_month_for_cross_month_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "usage.csv"
+            output = root / "cap-report.xlsx"
+            frame = usage_frame().iloc[[0]].copy()
+            frame.loc[frame.index[0], "Start time"] = "04/30/2026 @ 11:00 PM"
+            frame.loc[frame.index[0], "End time"] = "05/01/2026 @ 01:00 AM"
+            frame.to_csv(source, index=False)
+
+            result = build_usage_cap_report([(source, "May Billing")], output)
+
+            self.assertEqual(result.periods, ("2026-05",))
+
     def test_missed_reservations_and_active_users(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

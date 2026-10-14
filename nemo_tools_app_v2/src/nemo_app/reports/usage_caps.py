@@ -9,7 +9,11 @@ from nemo_app.billing.caps import apply_max_session_charge_caps, apply_project_c
 from nemo_app.billing.constants import ACCESS_FEE_BY_APPLICATION, PROJECT_CAP_BY_APPLICATION
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.billing.prepare import is_missed_reservation, is_staff_charge, prepare_usage_dataframe
-from nemo_app.billing.text import normalize_item
+from nemo_app.billing.text import (
+    billing_period_for_interval,
+    normalize_item,
+    parse_nemo_datetime,
+)
 
 from .excel import save_frames
 
@@ -49,15 +53,6 @@ class UsageCapResult:
     project_reduction: float
 
 
-def _period(series: pd.Series) -> pd.Series:
-    parsed = pd.to_datetime(
-        series.astype(str).str.replace(" @ ", " ", regex=False),
-        format="%m/%d/%Y %I:%M %p",
-        errors="coerce",
-    )
-    return parsed.dt.strftime("%Y-%m").fillna("Unknown")
-
-
 def _prepare_sources(sources: list[tuple[Path, str]]) -> tuple[pd.DataFrame, pd.DataFrame]:
     base_frames: list[pd.DataFrame] = []
     raw_frames: list[pd.DataFrame] = []
@@ -65,7 +60,12 @@ def _prepare_sources(sources: list[tuple[Path, str]]) -> tuple[pd.DataFrame, pd.
         raw = pd.read_csv(path)
         raw["Source File"] = label
         raw["Cost"] = pd.to_numeric(raw["Cost"], errors="coerce").fillna(0.0)
-        raw["Period"] = _period(raw["Start time"])
+        start_times = raw["Start time"].apply(parse_nemo_datetime)
+        end_times = raw.get("End time", pd.Series(None, index=raw.index)).apply(parse_nemo_datetime)
+        raw["Period"] = [
+            billing_period_for_interval(start, end)
+            for start, end in zip(start_times, end_times, strict=True)
+        ]
         raw["Item_norm"] = raw["Item"].apply(normalize_item)
         raw["IsStaffCharge"] = raw.apply(is_staff_charge, axis=1)
         raw["IsMissedReservation"] = raw.apply(is_missed_reservation, axis=1)
