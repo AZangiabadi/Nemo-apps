@@ -24,6 +24,32 @@ def response(http_status=200, **data):
 
 
 class MailchimpTests(unittest.TestCase):
+    def test_project_one_does_not_indicate_pi_but_other_managed_projects_do(self):
+        cases = [
+            ([1], False),
+            (["1"], False),
+            ([{"id": 1}], False),
+            ([1, 12], True),
+            ([{"id": 1}, {"id": 12}], True),
+            ([], False),
+            (None, False),
+            ([None, "invalid", 0, -1], False),
+        ]
+        for projects, expected in cases:
+            with self.subTest(projects=projects):
+                result = contact_activity(
+                    [
+                        {
+                            "is_active": True,
+                            "email": "test@example.edu",
+                            "managed_projects": projects,
+                        }
+                    ],
+                    [],
+                    timezone=dt.UTC,
+                )
+                self.assertEqual(result["test@example.edu"]["is_pi"], expected)
+
     def test_pi_flag_uses_managed_projects_and_combines_duplicate_active_accounts(self):
         users = [
             {"is_active": True, "email": "pi@example.edu", "managed_projects": []},

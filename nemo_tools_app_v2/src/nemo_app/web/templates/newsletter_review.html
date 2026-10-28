@@ -20,7 +20,7 @@
   <p>Only missing contacts can be selected. Existing contacts keep their subscription status. Active NEMO membership does not establish newsletter permission.</p>
   <p class="help"><span class="newsletter-highlight-key">Highlighted: missing from Mailchimp with a recorded NEMO login.</span></p>
   <p class="help">Last login comes from NEMO's recorded login timestamp. Last tool use is the latest end time (or start time for an ongoing session) attributed to that user, across all available tool history. Dates use the facility timezone shown beside each timestamp.</p>
-  <p class="help">PI is Yes when the user's NEMO managed_projects list is not empty.</p>
+  <p class="help">PI is Yes when the user manages a NEMO project other than project ID 1. Managing only project 1 does not count as PI.</p>
   <p class="help" id="newsletter-sort-status" role="status" aria-live="polite">Click a column heading to sort; click it again to reverse the order. Unrecorded dates stay at the bottom.</p>
   {% if not data.get('tool_activity_available', false) %}<p class="status error">Tool history is unavailable in this comparison. Run a new comparison to refresh the activity columns.</p>{% endif %}
   <form method="post">

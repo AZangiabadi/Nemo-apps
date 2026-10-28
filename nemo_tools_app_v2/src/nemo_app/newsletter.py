@@ -8,6 +8,18 @@ from typing import Any
 from nemo_app.mailchimp import MailchimpClient
 
 
+def _has_pi_project(projects: object) -> bool:
+    if not isinstance(projects, list):
+        return False
+    for project in projects:
+        identifier = project.get("id") if isinstance(project, dict) else project
+        text = str(identifier).strip()
+        # Managed project 1 does not indicate a PI for the newsletter review.
+        if text.isascii() and text.isdigit() and int(text) > 1:
+            return True
+    return False
+
+
 def _timestamp(value: object, timezone: dt.tzinfo) -> dt.datetime | None:
     if not value:
         return None
@@ -32,9 +44,7 @@ def contact_activity(
             email, {"login": None, "tool": None, "in_use": False, "is_pi": False}
         )
         managed_projects = user.get("managed_projects")
-        entry["is_pi"] = entry["is_pi"] or (
-            isinstance(managed_projects, list) and bool(managed_projects)
-        )
+        entry["is_pi"] = entry["is_pi"] or _has_pi_project(managed_projects)
         if user.get("id") is not None:
             emails_by_id[str(user["id"])] = email
         login = _timestamp(user.get("last_login"), timezone)
