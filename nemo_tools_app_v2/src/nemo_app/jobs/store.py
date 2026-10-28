@@ -207,6 +207,18 @@ class JobStore:
             row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return self._job(row) if row else None
 
+    def get_secrets(self, job_id: str) -> dict[str, str]:
+        """Load encrypted credentials internally for an approved follow-up job."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT secrets_encrypted FROM jobs "
+                "WHERE id = ? AND kind='newsletter_compare' AND status='completed'",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("The original job is no longer available. Run a new comparison.")
+        return self.cipher.decrypt(row["secrets_encrypted"])
+
     def claim_next(self, worker_id: str) -> Job | None:
         connection = self._connect()
         try:
@@ -266,7 +278,8 @@ class JobStore:
             cursor = connection.execute(
                 """
                 UPDATE jobs SET status='completed', summary=?, result_json=?,
-                    secrets_encrypted=NULL, finished_at=?
+                    secrets_encrypted=CASE WHEN kind='newsletter_compare'
+                        THEN secrets_encrypted ELSE NULL END, finished_at=?
                 WHERE id=? AND status='running'
                 """,
                 (summary, _json_dumps(result), _now(), job_id),
@@ -314,7 +327,8 @@ class JobStore:
             ).fetchall()
             identifiers = [row["id"] for row in rows]
             connection.executemany(
-                "UPDATE jobs SET status='expired', result_json='{}' WHERE id=?",
+                "UPDATE jobs SET status='expired', result_json='{}', secrets_encrypted=NULL "
+                "WHERE id=?",
                 [(identifier,) for identifier in identifiers],
             )
         return identifiers

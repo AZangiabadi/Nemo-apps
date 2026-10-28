@@ -5,6 +5,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from nemo_app.angstrom.client import AngstromLogClient
 from nemo_app.config import AppConfig
 from nemo_app.imports.qualification_importer import run_qualification_import
@@ -12,10 +14,12 @@ from nemo_app.imports.user_importer import run_import
 from nemo_app.invoices.customization import InvoiceCustomization
 from nemo_app.invoices.excel_parser import convert_excel_to_pdf
 from nemo_app.invoices.service import InvoiceOptions, generate_invoices
+from nemo_app.mailchimp import MailchimpClient
 from nemo_app.nemo.billing import fetch_billing_dataframe
 from nemo_app.nemo.cache import JsonTTLCache
 from nemo_app.nemo.client import NemoClient
 from nemo_app.nemo.metadata import MetadataRepository
+from nemo_app.newsletter import active_contacts, compare_newsletter
 from nemo_app.replacements.service import replace_account_project
 from nemo_app.reports.active_lab_users import build_active_lab_users_report
 from nemo_app.reports.detailed_financials import build_detailed_financial_report
@@ -229,7 +233,69 @@ def _asset(config: AppConfig, filename: str) -> Path | None:
     return path if path.exists() else None
 
 
+def _newsletter_compare(context: JobContext) -> tuple[str, dict[str, Any]]:
+    mailchimp = MailchimpClient(
+        context.job.secrets["mailchimp_key"], context.job.payload["audience_id"]
+    )
+    client = context.read_only_client()
+    users = client.fetch_all("users/")
+    context.log("Reading tool-use history for newsletter activity columns")
+    try:
+        events = client.fetch_all("usage_events/?fields=user,start,end&limit=1000")
+    except (requests.RequestException, ValueError):
+        events = None
+        context.log("Tool history could not be read. Last tool use will show Unavailable.")
+    result = compare_newsletter(
+        users, mailchimp, usage_events=events, timezone=context.config.timezone
+    )
+    context.log("Comparison complete. No contacts were added and no emails were sent.")
+    return "Comparison ready — review missing contacts", {"files": [], "data": result}
+
+
+def _newsletter_add(context: JobContext) -> tuple[str, dict[str, Any]]:
+    payload = context.job.payload
+    if (
+        not payload.get("consent_confirmed")
+        or not payload.get("consent_note")
+        or payload.get("subscription_status")
+        not in {
+            "pending",
+            "subscribed",
+        }
+    ):
+        raise ValueError("Newsletter permission and a valid subscription action are required.")
+    mailchimp = MailchimpClient(context.job.secrets["mailchimp_key"], payload["audience_id"])
+    if payload["subscription_status"] == "subscribed" and mailchimp.audience_info().get(
+        "double_optin"
+    ):
+        raise ValueError(
+            "This audience requires confirmation. Run a new comparison and use pending."
+        )
+    current, _invalid = active_contacts(context.read_only_client().fetch_all("users/"))
+    active = {contact["email"] for contact in current}
+    outcomes = []
+    for number, contact in enumerate(payload["contacts"], 1):
+        outcome = (
+            mailchimp.add_new(contact, payload["subscription_status"])
+            if contact["email"] in active
+            else "skipped_inactive"
+        )
+        outcomes.append({"email": contact["email"], "result": outcome})
+        context.log(f"{contact['email']}: {outcome}")
+        context.progress(number, len(payload["contacts"]), "Processing approved contacts")
+    return "Newsletter additions processed", {
+        "files": [],
+        "data": {
+            "outcomes": outcomes,
+            "consent_source": payload["consent_note"],
+            "approved_at": payload["approved_at"],
+        },
+    }
+
+
 HANDLERS: dict[str, Callable[[JobContext], tuple[str, dict[str, Any]]]] = {
+    "newsletter_compare": _newsletter_compare,
+    "newsletter_add": _newsletter_add,
     "invoice": _invoice,
     "user_import": _user_import,
     "qualification_import": _qualification_import,

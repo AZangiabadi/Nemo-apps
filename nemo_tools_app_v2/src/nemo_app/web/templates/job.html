@@ -9,6 +9,9 @@
   <pre id="logs">Loading job log…</pre>
   <div id="downloads" class="actions"></div>
   <div id="result"></div>
+  {% if job.kind == 'newsletter_compare' %}
+    <p><a class="button" href="{{ url_for('newsletter.review', job_id=job.id) }}" id="newsletter-review" hidden>Review newsletter comparison</a></p>
+  {% endif %}
 </section>
 {% endblock %}
 {% block scripts %}
@@ -44,7 +47,12 @@ async function poll() {
       link.className = 'button'; link.href = file.url; link.textContent = file.label;
       return link;
     }));
-    if (data.finished) { renderData(data.data); return; }
+    if (data.finished) {
+      renderData(data.data);
+      const review = document.getElementById('newsletter-review');
+      if (review && data.status === 'completed') review.hidden = false;
+      return;
+    }
   } catch (error) {
     summaryEl.textContent = `${error.message}; retrying…`;
   }

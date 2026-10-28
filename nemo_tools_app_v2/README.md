@@ -1,5 +1,35 @@
 # Refactored NEMO Tools Hub
 
+## Newsletter Sync
+
+To reuse a server-managed key, set `MAILCHIMP_API_KEY` in the private V2 `.env`
+file, then recreate the web and worker containers with the production Compose
+files. The Newsletter Sync page will show that a saved key is configured without
+displaying the key. If unset, the page accepts a per-comparison key instead.
+
+Open `/tools/newsletter` and enter a Mailchimp Marketing API key in the protected
+form, along with the target audience ID (CNI default: `9205f7ea97`). The comparison
+uses fresh active NEMO users and the complete Mailchimp audience, matching unique
+normalized email addresses. It does not send messages or change subscriptions.
+The review shows last NEMO login and last attributed tool use across the available
+usage history, in the configured facility timezone, including ongoing usage.
+Unavailable tool history is labeled explicitly rather than treated as no activity.
+The review page lets an operator select missing contacts, confirm their newsletter
+permission, and record where it was obtained. Confirmation email (`pending`) is
+the default action. Direct subscription is available only for an audience without
+double opt-in and still requires recorded permission. Existing contacts are
+always skipped, including unsubscribed, bounced, and pending contacts. Each action
+rechecks the user's active status and current audience membership before a
+create-only request. Failed or interrupted jobs may have partially completed;
+review their per-contact logs and run a fresh comparison before retrying.
+
+Mailchimp credentials are encrypted in the job database and never returned by
+the job status API. Comparison jobs retain encrypted credentials for approved
+follow-ups until job expiration; other completed/failed jobs discard credentials.
+The existing cleanup task removes retained comparison credentials on expiration.
+Newsletter opt-in must be collected separately (for example during onboarding);
+an active NEMO account is not itself a record of newsletter consent.
+
 Invoice generation defaults to fetching a selected month from
 `/api/billing/billing_data/`, using the protected read-only service token.
 The token's NEMO account needs `NEMO.use_billing_api`. Projects marked

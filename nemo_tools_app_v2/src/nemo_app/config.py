@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -49,6 +49,7 @@ class AppConfig:
     flask_secret_key: str
     job_secret_key: str
     read_only_api_token: str
+    mailchimp_api_key: str = field(repr=False)
     angstrom_log_app_url: str
     jumbotron_api_token: str
     jumbotron_kiosk_token: str
@@ -86,6 +87,7 @@ class AppConfig:
             flask_secret_key=os.environ.get("NEMO_FLASK_SECRET_KEY", "dev-only-secret"),
             job_secret_key=os.environ.get("NEMO_JOB_SECRET_KEY", ""),
             read_only_api_token=os.environ.get("NEMO_READ_ONLY_API_TOKEN", ""),
+            mailchimp_api_key=os.environ.get("MAILCHIMP_API_KEY", "").strip(),
             angstrom_log_app_url=os.environ.get("ANGSTROM_LOG_APP_URL", "").rstrip("/"),
             jumbotron_api_token=os.environ.get("NEMO_JUMBOTRON_API_TOKEN", ""),
             jumbotron_kiosk_token=os.environ.get("NEMO_JUMBOTRON_KIOSK_TOKEN", ""),

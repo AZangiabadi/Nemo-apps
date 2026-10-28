@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf %}
+{% block title %}Review Newsletter Contacts{% endblock %}
+{% block head %}
+<style>
+  .newsletter-login-highlight > td { background: #fffbeb; }
+  .newsletter-login-highlight > td:first-child { border-left: 4px solid #b45309; }
+  .newsletter-highlight-key { display: inline-block; padding: 0.35rem 0.65rem; background: #fffbeb; color: #78350f; border-left: 4px solid #b45309; border-radius: 4px; }
+  .newsletter-login-label { display: block; color: #78350f; font-size: 0.85em; }
+  #newsletter-contacts th button { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
+  #newsletter-contacts th button:hover { color: #0f766e; background: transparent; }
+  #newsletter-contacts th button:focus-visible { outline: 2px solid #0f766e; outline-offset: 4px; }
+</style>
+{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#0f766e">
+  <h1>Review newsletter contacts</h1>
+  <p>Audience: <strong>{{ data.audience_name }}</strong>. Active unique emails: {{ data.active_unique_emails }}. Invalid or missing emails skipped: {{ data.invalid_or_missing_emails }}.</p>
+  <ul>{% for status, count in data.counts.items() %}<li>{{ status|replace('_', ' ')|title }}: {{ count }}</li>{% endfor %}</ul>
+  <p>Only missing contacts can be selected. Existing contacts keep their subscription status. Active NEMO membership does not establish newsletter permission.</p>
+  <p class="help"><span class="newsletter-highlight-key">Highlighted: missing from Mailchimp with a recorded NEMO login.</span></p>
+  <p class="help">Last login comes from NEMO's recorded login timestamp. Last tool use is the latest end time (or start time for an ongoing session) attributed to that user, across all available tool history. Dates use the facility timezone shown beside each timestamp.</p>
+  <p class="help">PI is Yes when the user's NEMO managed_projects list is not empty.</p>
+  <p class="help" id="newsletter-sort-status" role="status" aria-live="polite">Click a column heading to sort; click it again to reverse the order. Unrecorded dates stay at the bottom.</p>
+  {% if not data.get('tool_activity_available', false) %}<p class="status error">Tool history is unavailable in this comparison. Run a new comparison to refresh the activity columns.</p>{% endif %}
+  <form method="post">
+    {{ csrf() }}
+    <div style="overflow-x:auto"><table id="newsletter-contacts">
+      <thead><tr>
+        {% for label, kind in [('Select', 'selection'), ('Name', 'text'), ('PI', 'number'), ('Email', 'text'), ('Mailchimp status', 'text'), ('Last NEMO login', 'date'), ('Last tool use', 'date')] %}
+          <th scope="col" aria-sort="none"><button type="button" data-sort-column="{{ loop.index0 }}" data-sort-kind="{{ kind }}" data-sort-label="{{ label }}">{{ label }} <span class="sort-indicator" aria-hidden="true">↕</span></button></th>
+        {% endfor %}
+      </tr></thead>
+      <tbody>{% for contact in data.contacts %}
+        {% set highlight = contact.status == 'missing' and contact.get('last_login') %}
+        <tr{% if highlight %} class="newsletter-login-highlight"{% endif %}>
+        <td>{% if contact.status == 'missing' %}<input type="checkbox" name="emails" value="{{ contact.email }}" aria-label="Select {{ contact.email }}">{% endif %}</td>
+        <td>{{ contact.first_name }} {{ contact.last_name }}</td>
+        <td data-sort="{% if 'is_pi' in contact %}{{ 1 if contact.is_pi else 0 }}{% endif %}">{% if 'is_pi' in contact %}{{ 'Yes' if contact.is_pi else 'No' }}{% else %}Not available{% endif %}</td>
+        <td>{{ contact.email }}</td><td data-sort="{{ contact.status }}">{{ contact.status|title }}{% if highlight %}<small class="newsletter-login-label">NEMO login recorded</small>{% endif %}</td>
+        <td data-sort="{{ contact.get('last_login') or '' }}">{{ contact.get('last_login')|newsletter_datetime }}</td>
+        <td data-sort="{{ (contact.get('last_tool_use') or '') if data.get('tool_activity_available', false) else '' }}">{% if data.get('tool_activity_available', false) %}{{ contact.get('last_tool_use')|newsletter_datetime }}{% if contact.get('tool_in_use') %}<br><strong>In use now</strong>{% endif %}{% else %}Unavailable{% endif %}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    <label for="subscription_status">Action for selected contacts</label>
+    <select name="subscription_status" id="subscription_status">
+      <option value="pending">Send Mailchimp confirmation email (recommended)</option>
+      {% if not data.double_optin %}<option value="subscribed">Subscribe directly — permission already recorded</option>{% endif %}
+    </select>
+    <p class="help">Confirmation sends an email to each selected person. Neither action is for people who have not agreed to newsletter signup. For those users, share the signup link through onboarding.</p>
+    <label class="choice"><input type="checkbox" name="consent_confirmed" required> I confirm every selected person agreed to newsletter signup.</label>
+    <label for="consent_note">Where and when was their permission recorded?</label>
+    <textarea id="consent_note" name="consent_note" minlength="5" maxlength="1000" required placeholder="For example: newsletter opt-in on the October onboarding forms"></textarea>
+    <div class="actions"><button type="submit">Process selected contacts</button><a class="button secondary" href="{{ url_for('newsletter.form') }}">New comparison</a></div>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const table = document.getElementById('newsletter-contacts');
+  const body = table.tBodies[0];
+  const rows = Array.from(body.rows);
+  const originalOrder = new Map(rows.map((row, index) => [row, index]));
+  const buttons = Array.from(table.querySelectorAll('button[data-sort-column]'));
+  const collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'});
+  let currentColumn = null;
+  let ascending = true;
+
+  function value(row, column, kind) {
+    const cell = row.cells[column];
+    if (kind === 'selection') {
+      const checkbox = cell.querySelector('input[type="checkbox"]');
+      return checkbox ? Number(checkbox.checked) : null;
+    }
+    const raw = (cell.dataset.sort ?? cell.textContent).trim();
+    if (!raw) return null;
+    if (kind === 'date' || kind === 'number') {
+      const number = kind === 'date' ? Date.parse(raw) : Number(raw);
+      return Number.isFinite(number) ? number : null;
+    }
+    return raw;
+  }
+
+  buttons.forEach(button => button.addEventListener('click', () => {
+    const column = Number(button.dataset.sortColumn);
+    const kind = button.dataset.sortKind;
+    ascending = currentColumn === column ? !ascending : true;
+    currentColumn = column;
+    const sorted = [...rows].sort((left, right) => {
+      const a = value(left, column, kind);
+      const b = value(right, column, kind);
+      if (a === null && b !== null) return 1;
+      if (b === null && a !== null) return -1;
+      const compared = a === null ? 0 : kind === 'text' ? collator.compare(a, b) : a - b;
+      return compared ? (ascending ? compared : -compared) : originalOrder.get(left) - originalOrder.get(right);
+    });
+    sorted.forEach(row => body.appendChild(row));
+    buttons.forEach(other => {
+      const active = other === button;
+      other.closest('th').setAttribute('aria-sort', active ? (ascending ? 'ascending' : 'descending') : 'none');
+      other.querySelector('.sort-indicator').textContent = active ? (ascending ? '↑' : '↓') : '↕';
+    });
+    const order = kind === 'date' ? (ascending ? 'oldest first' : 'newest first') : (ascending ? 'ascending' : 'descending');
+    document.getElementById('newsletter-sort-status').textContent = `Sorted by ${button.dataset.sortLabel}: ${order}.`;
+  }));
+})();
+</script>
+{% endblock %}

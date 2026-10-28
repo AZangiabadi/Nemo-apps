@@ -14,6 +14,13 @@ class ToolDefinition:
 
 TOOLS = (
     ToolDefinition(
+        "newsletter",
+        "Newsletter Sync",
+        "Compare active NEMO users with Mailchimp and review approved additions.",
+        "/tools/newsletter",
+        "#0f766e",
+    ),
+    ToolDefinition(
         "user-import",
         "User/Account/Project Batch Import",
         "Create NEMO records from an Excel or CSV spreadsheet.",

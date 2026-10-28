@@ -12,6 +12,7 @@ from .blueprints.core import core_blueprint
 from .blueprints.dashboard import dashboard_blueprint
 from .blueprints.invoices import invoice_blueprint
 from .blueprints.jobs import jobs_blueprint
+from .blueprints.newsletter import newsletter_blueprint
 from .blueprints.reports import reports_blueprint
 from .registry import TOOLS
 from .security import auth_blueprint, install_security
@@ -44,6 +45,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app.register_blueprint(administration_blueprint)
     app.register_blueprint(reports_blueprint)
     app.register_blueprint(jobs_blueprint)
+    app.register_blueprint(newsletter_blueprint)
     app.register_blueprint(dashboard_blueprint)
     install_security(app)
 

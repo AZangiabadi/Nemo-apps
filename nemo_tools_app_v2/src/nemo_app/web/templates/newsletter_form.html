@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_form_helpers.html" import csrf, token %}
+{% block title %}Newsletter Sync{% endblock %}
+{% block content %}
+<section class="panel accented" style="--accent:#0f766e">
+  <h1>Newsletter Sync</h1>
+  <p>Compare active NEMO users with your Mailchimp audience. This step only reads data; it does not add contacts or send emails.</p>
+  <form method="post">
+    {{ csrf() }}
+    {% if not read_only_api_configured %}{{ token() }}{% endif %}
+    {% if mailchimp_key_configured %}
+      <p class="help">Using the saved Mailchimp API key configured on the server.</p>
+    {% else %}
+      <label for="mailchimp_key">Mailchimp API key</label>
+      <input id="mailchimp_key" name="mailchimp_key" type="password" autocomplete="off" required>
+      <p class="help">To reuse the key for future comparisons, save it as MAILCHIMP_API_KEY in the server's private .env file and recreate the web and worker containers.</p>
+    {% endif %}
+    <p class="help">The key is encrypted in job storage so your approved follow-up can run. It is not included in logs or result pages and is removed when the comparison expires under the server's retention policy. Never enter it into a public source file.</p>
+    <label for="audience_id">Audience ID</label>
+    <input id="audience_id" name="audience_id" value="9205f7ea97" required>
+    <p class="help">This defaults to the audience in your CNI signup link. Confirm it matches your intended audience.</p>
+    <div class="actions"><button type="submit">Compare contacts</button><a class="button secondary" href="/">Back home</a></div>
+  </form>
+</section>
+{% endblock %}
