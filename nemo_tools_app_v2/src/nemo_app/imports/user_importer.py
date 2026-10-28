@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
+import requests
 
 from nemo_app.nemo.cache import JsonTTLCache
 from nemo_app.nemo.client import NemoClient
@@ -155,6 +157,11 @@ def load_spreadsheet(path: Path) -> list[SpreadsheetRow]:
             errors.append(f"Row {row.number}: missing Name and UNI")
         if not row.email and not row.uni:
             errors.append(f"Row {row.number}: missing Email and UNI")
+        if row.email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", row.email):
+            errors.append(
+                f"Row {row.number} ({row.uni or row.name}): invalid email address "
+                f"{row.email!r}. Enter the complete address, including the domain suffix."
+            )
         if not row.project_number:
             errors.append(f"Row {row.number}: missing Project Number")
         if row.account_type not in ACCOUNT_TYPES:
@@ -296,6 +303,33 @@ def _project_payload(row: SpreadsheetRow, account_id: int, pi_id: int) -> dict[s
     }
 
 
+def _create_user(client: NemoClient, row: SpreadsheetRow, **relationships) -> dict[str, Any]:
+    payload = _user_payload(row, **relationships)
+    try:
+        return client.post("users/", payload)
+    except requests.HTTPError as exc:
+        response = exc.response
+        if response is None or response.status_code != 400:
+            raise
+        try:
+            errors = response.json()
+        except ValueError:
+            errors = {}
+        details = (
+            "; ".join(
+                f"{field}: {message}"
+                for field, message in errors.items()
+                if field in {*payload, "non_field_errors", "detail"}
+            )
+            if isinstance(errors, dict)
+            else ""
+        )
+        raise ValueError(
+            f"Row {row.number} ({row.uni}): NEMO rejected this user. "
+            + (details[:1500] or "Check the username, email, user type, and project permissions.")
+        ) from None
+
+
 def _patch_relationships(
     client: NemoClient, user: dict[str, Any], **relationships: list[int]
 ) -> dict[str, Any]:
@@ -364,9 +398,10 @@ def run_import(
         else:
             if not row.email:
                 raise ValueError(f"Row {row.number}: PI email is required for a new user")
-            user = client.post(
-                "users/",
-                _user_payload(row, managed_accounts=[account_ids[row.project_number.lower()]]),
+            user = _create_user(
+                client,
+                row,
+                managed_accounts=[account_ids[row.project_number.lower()]],
             )
         records.users_by_email[row.email] = user
         records.users_by_username[row.uni.lower()] = user
@@ -407,7 +442,7 @@ def run_import(
         else:
             if not row.email:
                 raise ValueError(f"Row {row.number}: email is required for a new user")
-            user = client.post("users/", _user_payload(row, projects=[int(project["id"])]))
+            user = _create_user(client, row, projects=[int(project["id"])])
         records.users_by_email[row.email] = user
         records.users_by_username[row.uni.lower()] = user
     advance("Other users processed")
