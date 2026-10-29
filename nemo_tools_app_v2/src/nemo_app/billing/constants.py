@@ -40,6 +40,7 @@ Cambridge NanoTech ALD,Cleanroom
 Cressington Sputter Coater,Cleanroom
 Edwards Thermal Evaporator 1,Cleanroom
 Oxford PECVD,Cleanroom
+Samco PECVD,Cleanroom
 Parylene Coater,Cleanroom
 Solaris RTA,Cleanroom
 Across TF1700,Cleanroom
@@ -94,6 +95,7 @@ Autofinder 1,SMCL
 Autofinder 2,SMCL
 Bal-Tec CPD,SMCL
 Bruker Dimensions FastScan AFM,SMCL
+Bruker Tensor II FTIR,SMCL
 Horiba XploRA micro-Raman,SMCL
 Malvern Zetasizer Nano-ZS,SMCL
 Micrometrics ASAP 2020 HV BET analyzer,SMCL
@@ -181,6 +183,8 @@ TOOL_MAX_HOURS_BY_TOOL_ID = {
     74: 4.0,
     77: 12.0,
     78: 12.0,
+    79: 10.0,
+    80: 10.0,
 }
 
 TOOL_MAX_HOURS_BY_NAME = {
@@ -205,6 +209,8 @@ TOOL_MAX_HOURS_BY_NAME = {
     "autofinder1": 9.0,
     "autofinder2": 9.0,
     "oxfordpecvd": 4.0,
+    "samcopecvd": 10.0,
+    "brukertensoriiftir": 10.0,
     "angstromevovacsystem": 4.0,
     "angstromhighvacuumevaporator": 4.0,
     "ajadielectricsputter": 6.0,

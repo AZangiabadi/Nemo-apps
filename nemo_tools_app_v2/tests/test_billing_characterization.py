@@ -5,11 +5,58 @@ import unittest
 import pandas as pd
 
 from nemo_app.billing.caps import apply_max_session_charge_caps, apply_project_charge_caps
-from nemo_app.billing.prepare import filter_invoice_quantity_rows, prepare_usage_dataframe
+from nemo_app.billing.prepare import (
+    exclude_waived_charges,
+    filter_invoice_quantity_rows,
+    prepare_usage_dataframe,
+)
 from tests.fixtures import usage_frame
 
 
 class BillingCharacterizationTests(unittest.TestCase):
+    def test_live_tool_metadata_supplies_lab_and_id_cap_after_rename(self) -> None:
+        source = usage_frame().iloc[:2].copy()
+        source.loc[0, "Item"] = "Renamed PECVD"
+        prepared = prepare_usage_dataframe(
+            source,
+            tools_by_id={26: "Renamed PECVD"},
+            tool_labs={"Renamed PECVD": "Cleanroom"},
+        )
+        self.assertEqual(prepared.iloc[0]["Tool ID"], 26)
+        self.assertEqual(prepared.iloc[0]["Quantity"], 240.0)
+        self.assertEqual(prepared["Lab"].tolist(), ["Cleanroom", "Cleanroom"])
+
+    def test_live_lab_by_id_takes_precedence_and_history_falls_back(self) -> None:
+        source = usage_frame().iloc[[0]].copy()
+        source["Tool ID"] = 26
+        prepared = prepare_usage_dataframe(
+            source, tools_by_id={26: "Renamed PECVD"},
+            tool_labs={"Renamed PECVD": "SMCL"},
+        )
+        self.assertEqual(prepared.iloc[0]["Lab"], "SMCL")
+        historical = prepare_usage_dataframe(source, tools_by_id={79: "FTIR"})
+        self.assertEqual(historical.iloc[0]["Lab"], "Cleanroom")
+        self.assertEqual(historical.iloc[0]["Quantity"], 240.0)
+
+    def test_waived_tool_and_staff_charges_are_excluded(self) -> None:
+        for column in ("Waived", "waived"):
+            for value in (True, "true", " TRUE ", 1):
+                with self.subTest(column=column, value=value):
+                    source = usage_frame()
+                    source[column] = [value, value, False, False, False]
+                    prepared = prepare_usage_dataframe(source)
+                    self.assertNotIn("Ada Lovelace", prepared.loc[
+                        ~prepared["IsConsumable"], "User"
+                    ].tolist())
+                    self.assertNotIn("Original Quantity", prepared.columns)
+
+    def test_waived_filter_keeps_false_and_missing_flags(self) -> None:
+        source = usage_frame()
+        source["Waived"] = [False, "false", None, 0, ""]
+        pd.testing.assert_frame_equal(exclude_waived_charges(source), source)
+        source["Waived"] = True
+        self.assertTrue(exclude_waived_charges(source).empty)
+
     def test_cross_month_usage_is_billed_in_completion_month(self) -> None:
         source = usage_frame().iloc[[0]].copy()
         source.loc[source.index[0], "Start time"] = "04/30/2026 @ 11:00 PM"

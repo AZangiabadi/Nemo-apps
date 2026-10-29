@@ -38,15 +38,30 @@ class MetadataRepository:
         return self._load("projects", load, use_cache=use_cache)
 
     def tools(self, *, use_cache: bool = True) -> dict[int, str]:
-        def load() -> dict[str, str]:
-            return {
-                str(record["id"]): str(record["name"])
-                for record in self.client.fetch_all("tools/")
-                if isinstance(record.get("id"), int) and record.get("name")
-            }
+        return {
+            record["id"]: str(record["name"])
+            for record in self.tool_records(use_cache=use_cache)
+            if isinstance(record.get("id"), int) and record.get("name")
+        }
 
-        payload = self._load("tools", load, use_cache=use_cache)
-        return {int(key): value for key, value in payload.items()}
+    def tool_records(self, *, use_cache: bool = True) -> list[dict[str, Any]]:
+        return self._load(
+            "tool_records_v1", lambda: self.client.fetch_all("tools/"), use_cache=use_cache
+        )
+
+    def tool_labs(self, *, use_cache: bool = True) -> dict[str, str]:
+        labs = {
+            "cleanroom": "Cleanroom",
+            "smcl": "SMCL",
+            "electron microscopy": "Electron Microscopy Lab",
+        }
+        result = {}
+        for record in self.tool_records(use_cache=use_cache):
+            category = str(record.get("_category") or "").split("/", 1)[0].strip().lower()
+            lab = labs.get(category)
+            if record.get("name") and lab:
+                result[str(record["name"])] = lab
+        return result
 
     def adjustments(self, *, use_cache: bool = True) -> list[dict[str, Any]]:
         return self._load(

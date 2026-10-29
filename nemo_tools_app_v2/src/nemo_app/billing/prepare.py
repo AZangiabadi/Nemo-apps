@@ -17,8 +17,10 @@ from .constants import INVOICE_APPLICATION_IDENTIFIERS, TOOL_TO_LAB
 from .text import (
     billing_period_for_interval,
     normalize_item,
+    normalize_tool_key,
     parse_minimum_charge,
     parse_nemo_datetime,
+    parse_tool_id,
 )
 
 REQUIRED_USAGE_COLUMNS = {
@@ -32,6 +34,15 @@ REQUIRED_USAGE_COLUMNS = {
     "Cost",
     "Quantity",
 }
+
+
+def exclude_waived_charges(frame: pd.DataFrame) -> pd.DataFrame:
+    waived = pd.Series(False, index=frame.index)
+    for column in frame.columns:
+        if str(column).strip().lower() == "waived":
+            values = frame[column].astype("string").str.strip().str.lower()
+            waived |= values.isin(("true", "1", "1.0", "yes", "on"))
+    return frame.loc[~waived].copy()
 
 
 def is_consumable_type(value: object) -> bool:
@@ -56,7 +67,9 @@ def is_staff_charge(row: pd.Series) -> bool:
 
 
 def _classify_usage(
-    frame: pd.DataFrame, consumable_labs: dict[str, str] | None = None
+    frame: pd.DataFrame, consumable_labs: dict[str, str] | None = None,
+    tool_labs: dict[str, str] | None = None,
+    tools_by_id: dict[int, str] | None = None,
 ) -> pd.DataFrame:
     result = frame.copy()
     result["Start_dt"] = result["Start time"].apply(parse_nemo_datetime)
@@ -69,6 +82,16 @@ def _classify_usage(
     result["IsStaffCharge"] = result.apply(is_staff_charge, axis=1)
     result["IsToolUsageCharge"] = ~result["IsConsumable"] & ~result["IsMissedReservation"]
     result["Lab"] = result["Item_norm"].map(TOOL_TO_LAB)
+    if tool_labs:
+        labs = {normalize_tool_key(name): lab for name, lab in tool_labs.items()}
+        live_labs = result["Item"].apply(normalize_tool_key).map(labs)
+        if tools_by_id and "Tool ID" in result:
+            id_labs = {
+                tool_id: labs.get(normalize_tool_key(name))
+                for tool_id, name in tools_by_id.items()
+            }
+            live_labs = result["Tool ID"].map(id_labs).combine_first(live_labs)
+        result["Lab"] = live_labs.combine_first(result["Lab"])
     if consumable_labs:
         result["Lab"] = result["Lab"].fillna(result["Item_norm"].map(consumable_labs))
     result["Lab"] = result["Lab"].fillna("Consumable")
@@ -115,6 +138,7 @@ def prepare_usage_dataframe(
     *,
     consumable_labs: dict[str, str] | None = None,
     tools_by_id: dict[int, str] | None = None,
+    tool_labs: dict[str, str] | None = None,
     project_map: dict[str, dict[str, Any]] | None = None,
     adjustment_requests: list[dict[str, Any]] | None = None,
     filter_applications: bool = True,
@@ -126,7 +150,17 @@ def prepare_usage_dataframe(
     if missing:
         raise ValueError(f"CSV missing expected columns: {sorted(missing)}")
 
-    result = source.copy()
+    result = exclude_waived_charges(source)
+    if tools_by_id:
+        name_ids = {normalize_tool_key(name): tool_id for tool_id, name in tools_by_id.items()}
+        tool_ids = pd.Series(pd.NA, index=result.index, dtype="Int64")
+        for column in ("Tool ID", "Tool Id", "ToolID", "Tool"):
+            if column in result:
+                parsed = result[column].apply(parse_tool_id).astype("Int64")
+                tool_ids = tool_ids.fillna(parsed)
+        tool_rows = result["Type"].astype(str).str.strip().str.lower().eq("tool_usage")
+        inferred = result["Item"].apply(normalize_tool_key).map(name_ids).where(tool_rows)
+        result["Tool ID"] = tool_ids.fillna(inferred.astype("Int64"))
     result["Application identifier"] = result["Application identifier"].astype(str).str.strip()
     if filter_applications:
         result = result[
@@ -134,7 +168,7 @@ def prepare_usage_dataframe(
         ].copy()
     result["Cost"] = pd.to_numeric(result["Cost"], errors="coerce").fillna(0.0)
     result["Quantity"] = pd.to_numeric(result["Quantity"], errors="coerce")
-    result = _classify_usage(result, consumable_labs)
+    result = _classify_usage(result, consumable_labs, tool_labs, tools_by_id)
 
     if tools_by_id and adjustment_requests:
         result = apply_adjustment_requests(
@@ -143,7 +177,7 @@ def prepare_usage_dataframe(
             tools_by_id=tools_by_id,
             projects_by_name=project_map or {},
         )
-        result = _classify_usage(result, consumable_labs)
+        result = _classify_usage(result, consumable_labs, tool_labs, tools_by_id)
 
     if filter_invoice_quantities:
         result = filter_invoice_quantity_rows(result)

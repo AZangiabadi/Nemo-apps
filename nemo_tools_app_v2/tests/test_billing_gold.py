@@ -179,6 +179,9 @@ class GoldDepositionTests(unittest.TestCase):
             def tools(self, **_options):
                 return {28: "Angstrom High Vacuum"}
 
+            def tool_labs(self, **_options):
+                return {}
+
             def adjustments(self, **_options):
                 return []
 

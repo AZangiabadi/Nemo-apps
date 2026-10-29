@@ -24,6 +24,9 @@ class _Metadata:
     def tools(self, **_options):
         return {}
 
+    def tool_labs(self, **_options):
+        return {}
+
     def adjustments(self, **_options):
         return []
 

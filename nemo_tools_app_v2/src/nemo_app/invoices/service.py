@@ -21,7 +21,7 @@ from nemo_app.billing.gold_audit import (
     reported_gold_usage,
 )
 from nemo_app.billing.invoice_model import InvoiceDocument
-from nemo_app.billing.prepare import prepare_usage_dataframe
+from nemo_app.billing.prepare import exclude_waived_charges, prepare_usage_dataframe
 from nemo_app.billing.text import month_label, safe_filename
 from nemo_app.nemo.metadata import MetadataRepository, project_pi
 
@@ -165,15 +165,22 @@ def generate_invoices(
     output_dir.mkdir(parents=True, exist_ok=True)
     projects = metadata.projects(use_cache=options.use_cache)
     tools = metadata.tools(use_cache=options.use_cache)
+    tool_labs = metadata.tool_labs(use_cache=options.use_cache)
     adjustments = metadata.adjustments(use_cache=options.use_cache)
     consumables = metadata.consumable_labs(use_cache=options.use_cache)
     source = csv_path.copy() if isinstance(csv_path, pd.DataFrame) else pd.read_csv(csv_path)
+    source = exclude_waived_charges(source)
     no_charge_projects = {name for name, project in projects.items() if project.get("no_charge")}
     source = source.loc[~source["Project"].isin(no_charge_projects)].copy()
+    if source.empty:
+        raise ValueError(
+            "No invoiceable rows remain after excluding waived charges and no-charge projects."
+        )
     prepared = prepare_usage_dataframe(
         source,
         consumable_labs=consumables,
         tools_by_id=tools,
+        tool_labs=tool_labs,
         project_map=projects,
         adjustment_requests=adjustments,
         filter_invoice_quantities=True,
