@@ -130,6 +130,13 @@ class JobStore:
                     message TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS job_logs_job ON job_logs(job_id, id);
+                CREATE TABLE IF NOT EXISTS revenue_snapshots (
+                    period TEXT NOT NULL,
+                    hourly_caps INTEGER NOT NULL,
+                    report_json TEXT NOT NULL,
+                    job_order INTEGER NOT NULL,
+                    PRIMARY KEY (period, hourly_caps)
+                );
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
@@ -137,6 +144,46 @@ class JobStore:
                 connection.execute(
                     "ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT NOT NULL DEFAULT ''"
                 )
+            for row in connection.execute(
+                "SELECT id, result_json FROM jobs WHERE kind='revenue' AND status='completed'"
+            ).fetchall():
+                self._save_revenue_snapshot(connection, row["id"], json.loads(row["result_json"]))
+
+    @staticmethod
+    def _save_revenue_snapshot(
+        connection: sqlite3.Connection, job_id: str, result: dict[str, Any]
+    ) -> None:
+        job = connection.execute(
+            "SELECT rowid AS job_order, kind FROM jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if not job or job["kind"] != "revenue":
+            return
+        report = result.get("data", {})
+        if not report.get("period") or not report.get("generated_at"):
+            return
+        connection.execute(
+            """
+            INSERT INTO revenue_snapshots (period, hourly_caps, report_json, job_order)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(period, hourly_caps) DO UPDATE SET
+                report_json=excluded.report_json, job_order=excluded.job_order
+            WHERE excluded.job_order > revenue_snapshots.job_order
+            """,
+            (
+                report["period"],
+                int(bool(report.get("apply_hourly_caps"))),
+                _json_dumps(report),
+                job["job_order"],
+            ),
+        )
+
+    def revenue_snapshot(self, period: str, *, hourly_caps: bool) -> dict[str, Any] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT report_json FROM revenue_snapshots WHERE period=? AND hourly_caps=?",
+                (period, int(hourly_caps)),
+            ).fetchone()
+        return json.loads(row["report_json"]) if row else None
 
     def enqueue(
         self,
@@ -286,6 +333,7 @@ class JobStore:
             )
             if cursor.rowcount != 1:
                 raise RuntimeError(f"Job {job_id!r} is not running")
+            self._save_revenue_snapshot(connection, job_id, result)
             self._insert_log(connection, job_id, summary)
 
     def fail(self, job_id: str, *, error: str, log_message: str | None = None) -> None:

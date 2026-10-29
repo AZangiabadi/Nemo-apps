@@ -14,6 +14,13 @@ class ToolDefinition:
 
 TOOLS = (
     ToolDefinition(
+        "revenue",
+        "Revenue Analysis",
+        "Monthly invoice revenue, gold charges, and PI spending.",
+        "/tools/revenue",
+        "#0f766e",
+    ),
+    ToolDefinition(
         "newsletter",
         "Newsletter Sync",
         "Compare active NEMO users with Mailchimp and review approved additions.",

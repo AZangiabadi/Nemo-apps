@@ -94,7 +94,7 @@ def billing_records_dataframe(
 
 
 def fetch_billing_dataframe(
-    client: NemoClient, period: str, *, timezone: dt.tzinfo
+    client: NemoClient, period: str, *, timezone: dt.tzinfo, allow_empty: bool = False
 ) -> pd.DataFrame:
     start, end = billing_month_dates(period)
     query = urlencode(
@@ -112,6 +112,6 @@ def fetch_billing_dataframe(
                 "rates and project configuration, or use CSV upload."
             ) from exc
         raise
-    if not records:
+    if not records and not allow_empty:
         raise ValueError("NEMO returned no billable records for the selected month.")
     return billing_records_dataframe(records, timezone=timezone)

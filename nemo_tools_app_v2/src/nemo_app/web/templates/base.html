@@ -23,6 +23,7 @@
         <a href="{{ url_for('core.home') }}">Home</a>
         <a href="{{ url_for('reports.reports_page') }}">Reports</a>
         <a href="{{ url_for('invoices.invoice_form') }}">Invoices</a>
+        <a href="{{ url_for('revenue.page') }}">Revenue</a>
         <a href="{{ url_for('administration.import_form') }}">Import</a>
         <a href="{{ url_for('dashboard.page') }}">Jumbotron</a>
         {% if session.get('authenticated') %}

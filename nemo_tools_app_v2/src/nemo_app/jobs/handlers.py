@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -13,7 +14,12 @@ from nemo_app.imports.qualification_importer import run_qualification_import
 from nemo_app.imports.user_importer import run_import
 from nemo_app.invoices.customization import InvoiceCustomization
 from nemo_app.invoices.excel_parser import convert_excel_to_pdf
-from nemo_app.invoices.service import InvoiceOptions, generate_invoices
+from nemo_app.invoices.service import (
+    InvoiceOptions,
+    NoInvoiceableRows,
+    calculate_invoices,
+    generate_invoices,
+)
 from nemo_app.mailchimp import MailchimpClient
 from nemo_app.nemo.billing import fetch_billing_dataframe
 from nemo_app.nemo.cache import JsonTTLCache
@@ -24,6 +30,7 @@ from nemo_app.replacements.service import replace_account_project
 from nemo_app.reports.active_lab_users import build_active_lab_users_report
 from nemo_app.reports.detailed_financials import build_detailed_financial_report
 from nemo_app.reports.missed_reservations import build_missed_reservation_reports
+from nemo_app.reports.revenue import summarize_revenue
 from nemo_app.reports.usage_caps import build_usage_cap_report
 from nemo_app.reports.user_pi import build_user_pi_report
 
@@ -128,6 +135,36 @@ def _invoice(context: JobContext) -> tuple[str, dict[str, Any]]:
         f"Created {result.invoice_count} invoice(s)",
         context.files_result(result_files, **_result_data(result)),
     )
+
+
+def _revenue(context: JobContext) -> tuple[str, dict[str, Any]]:
+    period = context.job.payload["billing_month"]
+    context.progress(0, 3, "Fetching monthly billing")
+    source = fetch_billing_dataframe(
+        context.read_only_client(),
+        period,
+        timezone=context.config.timezone,
+        allow_empty=True,
+    )
+    documents = ()
+    hourly_caps = bool(context.job.payload.get("apply_hourly_caps", False))
+    if not source.empty:
+        context.progress(1, 3, "Calculating final invoices")
+        try:
+            calculation = calculate_invoices(
+                source,
+                metadata=context.metadata(),
+                options=InvoiceOptions(apply_hourly_caps=hourly_caps, use_cache=False),
+                timezone=context.config.timezone,
+            )
+            documents = calculation.documents
+        except NoInvoiceableRows:
+            pass
+    report = summarize_revenue(documents, period)
+    report["apply_hourly_caps"] = hourly_caps
+    report["generated_at"] = dt.datetime.now(context.config.timezone).isoformat()
+    context.progress(3, 3, "Revenue analysis complete")
+    return "Revenue analysis complete", {"files": [], "data": report}
 
 
 def _user_import(context: JobContext) -> tuple[str, dict[str, Any]]:
@@ -294,6 +331,7 @@ def _newsletter_add(context: JobContext) -> tuple[str, dict[str, Any]]:
 
 
 HANDLERS: dict[str, Callable[[JobContext], tuple[str, dict[str, Any]]]] = {
+    "revenue": _revenue,
     "newsletter_compare": _newsletter_compare,
     "newsletter_add": _newsletter_add,
     "invoice": _invoice,

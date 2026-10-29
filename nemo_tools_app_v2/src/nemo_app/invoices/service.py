@@ -16,6 +16,7 @@ from nemo_app.billing.gold import (
     angstrom_tool_ids,
 )
 from nemo_app.billing.gold_audit import (
+    GoldAuditReport,
     build_gold_audit_report,
     logged_gold_runs,
     reported_gold_usage,
@@ -32,6 +33,10 @@ from .gold_audit_renderer import render_gold_audit_workbook
 from .pdf_renderer import render_invoice_pdf
 
 ProgressCallback = Callable[[int, int, str], None]
+
+
+class NoInvoiceableRows(ValueError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +57,13 @@ class InvoiceResult:
     row_count: int
     gold_audit_rows: int
     gold_audit_exceptions: int
+
+
+@dataclass(frozen=True)
+class InvoiceCalculation:
+    documents: tuple[InvoiceDocument, ...]
+    gold_audit: GoldAuditReport
+    row_count: int
 
 
 def make_invoice_number(
@@ -146,23 +158,18 @@ def _archive(paths: list[Path], output_path: Path) -> Path:
     return output_path
 
 
-def generate_invoices(
+def calculate_invoices(
     csv_path: Path | pd.DataFrame,
-    output_dir: Path,
     *,
     metadata: MetadataRepository,
     options: InvoiceOptions,
-    logo_path: Path | None = None,
     progress: ProgressCallback | None = None,
     timezone: dt.tzinfo | None = None,
     generated_at: dt.datetime | None = None,
     gold_log_client: AngstromLogClient | None = None,
     customization: InvoiceCustomization | None = None,
-) -> InvoiceResult:
-    if not options.generate_excel and not options.generate_pdf:
-        raise ValueError("Select at least one invoice output format.")
+) -> InvoiceCalculation:
     customization = customization or DEFAULT_INVOICE_CUSTOMIZATION
-    output_dir.mkdir(parents=True, exist_ok=True)
     projects = metadata.projects(use_cache=options.use_cache)
     tools = metadata.tools(use_cache=options.use_cache)
     tool_labs = metadata.tool_labs(use_cache=options.use_cache)
@@ -173,7 +180,7 @@ def generate_invoices(
     no_charge_projects = {name for name, project in projects.items() if project.get("no_charge")}
     source = source.loc[~source["Project"].isin(no_charge_projects)].copy()
     if source.empty:
-        raise ValueError(
+        raise NoInvoiceableRows(
             "No invoiceable rows remain after excluding waived charges and no-charge projects."
         )
     prepared = prepare_usage_dataframe(
@@ -225,7 +232,7 @@ def generate_invoices(
     )
     prepared = prepared.loc[~prepared["IsMissedReservation"].fillna(False)].copy()
     if prepared.empty:
-        raise ValueError("No invoiceable rows remain after filtering the CSV.")
+        raise NoInvoiceableRows("No invoiceable rows remain after filtering the CSV.")
     pi_values = prepared["Project"].apply(lambda value: project_pi(str(value), projects))
     prepared["PI_key"] = pi_values.apply(lambda value: value.key)
     prepared["PI_name"] = pi_values.apply(lambda value: value.display_name)
@@ -237,7 +244,7 @@ def generate_invoices(
         if _has_invoiceable_activity(group)
     ]
     if not groups:
-        raise ValueError("No invoice groups contain billable activity.")
+        raise NoInvoiceableRows("No invoice groups contain billable activity.")
     if generated_at is not None and generated_at.tzinfo is None:
         raise ValueError("generated_at must include timezone information")
     if generated_at is None:
@@ -248,9 +255,6 @@ def generate_invoices(
         generated_at = generated_at.astimezone(timezone)
     sequences: dict[str, int] = {}
     documents: list[InvoiceDocument] = []
-    used_names: set[str] = set()
-    files: list[Path] = []
-    excel_count = pdf_count = 0
     for index, ((pi_key, period), group) in enumerate(groups, 1):
         period = str(period)
         sequences[period] = sequences.get(period, 0) + 1
@@ -275,6 +279,47 @@ def generate_invoices(
             ),
         )
         documents.append(document)
+        if progress:
+            progress(index, len(groups), f"{name} {month_label(period)}")
+
+    return InvoiceCalculation(tuple(documents), gold_audit, len(prepared))
+
+
+def generate_invoices(
+    csv_path: Path | pd.DataFrame,
+    output_dir: Path,
+    *,
+    metadata: MetadataRepository,
+    options: InvoiceOptions,
+    logo_path: Path | None = None,
+    progress: ProgressCallback | None = None,
+    timezone: dt.tzinfo | None = None,
+    generated_at: dt.datetime | None = None,
+    gold_log_client: AngstromLogClient | None = None,
+    customization: InvoiceCustomization | None = None,
+) -> InvoiceResult:
+    if not options.generate_excel and not options.generate_pdf:
+        raise ValueError("Select at least one invoice output format.")
+    customization = customization or DEFAULT_INVOICE_CUSTOMIZATION
+    calculation = calculate_invoices(
+        csv_path,
+        metadata=metadata,
+        options=options,
+        progress=progress,
+        timezone=timezone,
+        generated_at=generated_at,
+        gold_log_client=gold_log_client,
+        customization=customization,
+    )
+    documents = list(calculation.documents)
+    gold_audit = calculation.gold_audit
+    generated_at = documents[0].generated_at
+    output_dir.mkdir(parents=True, exist_ok=True)
+    used_names: set[str] = set()
+    files: list[Path] = []
+    excel_count = pdf_count = 0
+    for document in documents:
+        name, period = document.pi_name, document.period
         base_name = f"{safe_filename(name)} {month_label(period)}"
         candidate = base_name
         suffix = 0
@@ -295,8 +340,6 @@ def generate_invoices(
                 )
             )
             pdf_count += 1
-        if progress:
-            progress(index, len(groups), f"{name} {month_label(period)}")
 
     periods = sorted({document.period for document in documents})
     contact_name = (
@@ -326,7 +369,7 @@ def generate_invoices(
         invoice_count=len(documents),
         excel_count=excel_count,
         pdf_count=pdf_count,
-        row_count=len(prepared),
+        row_count=calculation.row_count,
         gold_audit_rows=len(gold_audit.rows),
         gold_audit_exceptions=gold_audit.exception_count,
     )

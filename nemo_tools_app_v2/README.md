@@ -1,5 +1,27 @@
 # Refactored NEMO Tools Hub
 
+## Revenue Analysis
+
+Open `/tools/revenue` for monthly calculated invoice revenue, daily charge and
+gold-surcharge charts, project-type totals, and PI spending rankings. Analysis
+runs through the same `calculate_invoices` service used by Excel/PDF generation,
+including waived/no-charge exclusions, adjustments, minimum-quantity filtering,
+project/session caps, recorded gold deposition charges, and default access fees.
+The session-cap checkbox defaults off to match the invoice form; project caps
+and the forced BET limit still apply. Custom invoice fee overrides are not
+inferred from previously generated documents.
+
+Charts represent calculated invoice amounts, not collected payments. Daily
+charges use their billing completion date; monthly access fees are allocated
+to month-end. Gold surcharge revenue is already included in total revenue.
+CSV export includes all PI rankings and daily/project-type totals. Results are
+saved in the persistent database independently of background-job retention.
+Show analysis loads the saved month/cap-setting result without calling NEMO.
+Previous/next month arrows also load saved results; Next stops at the current month.
+Re-analyze uses the protected billing API token and replaces the saved result
+only after successful completion. Existing completed revenue jobs are migrated
+to saved results automatically. The original calculation timestamp is retained.
+
 ## NEMO Lookup Data
 
 Invoices and financial reports use tool categories from `tools/` for lab

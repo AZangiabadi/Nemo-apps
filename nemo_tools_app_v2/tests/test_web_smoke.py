@@ -37,6 +37,7 @@ class WebSmokeTests(unittest.TestCase):
                 "/tools/user-import",
                 "/tools/qualification-import",
                 "/tools/invoices",
+                "/tools/revenue",
                 "/tools/detailed-financials",
                 "/tools/usage-caps",
                 "/tools/user-pi",
