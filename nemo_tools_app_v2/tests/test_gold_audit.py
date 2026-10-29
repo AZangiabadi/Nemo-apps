@@ -13,6 +13,7 @@ from nemo_app.angstrom.client import AngstromLogClient
 from nemo_app.billing.gold_audit import (
     LoggedGoldRun,
     ReportedGoldUsage,
+    billable_logged_thickness,
     build_gold_audit_report,
 )
 from nemo_app.invoices.gold_audit_renderer import render_gold_audit_workbook
@@ -32,6 +33,33 @@ class _Response:
 
 
 class GoldAuditTests(unittest.TestCase):
+    def test_billing_uses_logs_even_without_user_gold_report(self):
+        usage = self.usage(1, dt.datetime(2026, 7, 27, 9), dt.datetime(2026, 7, 27, 10), 0)
+        report = build_gold_audit_report(
+            [usage],
+            [
+                self.log(dt.datetime(2026, 7, 27, 9, 20), 40, "run-a"),
+                self.log(dt.datetime(2026, 7, 27, 9, 40), 60, "run-b"),
+            ],
+        )
+        self.assertEqual(billable_logged_thickness(report), {1: 100})
+
+    def test_missing_and_ambiguous_logs_are_not_used_for_billing(self):
+        usages = [
+            self.usage(i, dt.datetime(2026, 7, 27, 9), dt.datetime(2026, 7, 27, 10), 50)
+            for i in (1, 2)
+        ]
+        self.assertEqual(billable_logged_thickness(build_gold_audit_report(usages[:1], [])), {})
+        self.assertEqual(
+            billable_logged_thickness(
+                build_gold_audit_report(
+                    usages,
+                    [self.log(dt.datetime(2026, 7, 27, 9, 20), 50, "run-a")],
+                )
+            ),
+            {},
+        )
+
     def usage(
         self,
         event_id: int,

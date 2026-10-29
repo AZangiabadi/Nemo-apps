@@ -116,6 +116,22 @@
       label: 'Final revenue', data: data.applications.map(item => item.total),
       backgroundColor: ['#0f766e', '#4f69b5', '#bd506d', '#ab790b'], maxBarThickness: 28
     }], {indexAxis: 'y'});
+    const hasLabs = Array.isArray(data.labs);
+    document.getElementById('lab-unavailable').hidden = hasLabs;
+    document.getElementById('lab-chart-wrap').hidden = !hasLabs;
+    document.getElementById('lab-details').hidden = !hasLabs;
+    if (hasLabs) {
+      chart('lab-chart', 'bar', data.labs.map(item => item.name), [{
+        label: 'Lab revenue', data: data.labs.map(item => item.total),
+        backgroundColor: ['#0f766e', '#4f69b5', '#bd506d', '#ab790b', '#596579'], maxBarThickness: 28
+      }], {indexAxis: 'y'});
+      document.getElementById('lab-data').replaceChildren(...data.labs.map(item => {
+        const row = document.createElement('div'); row.className = 'revenue-type-item';
+        const label = document.createElement('span'); label.textContent = item.name;
+        const value = document.createElement('strong'); value.textContent = money.format(item.total);
+        row.append(label, value); return row;
+      }));
+    }
     piRows();
     document.getElementById('daily-rows').replaceChildren(...data.daily.map(item => {
       const row = document.createElement('tr');
@@ -204,6 +220,7 @@
       ['Monthly total', report.period, report.other + report.gold, report.fees, report.gold, report.total],
       ...report.daily.map(item => ['Daily', item.date, item.charges, item.fees, item.gold, item.total]),
       ...report.applications.map(item => ['Project type', item.name, '', '', '', item.total]),
+      ...(report.labs || []).map(item => ['Lab', item.name, '', '', '', item.total]),
       ...report.pis.map(item => ['PI', item.name, '', '', item.gold, item.total])];
     const csv = rows.map(row => row.map(value => {
       let cell = String(value);

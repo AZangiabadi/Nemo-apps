@@ -35,7 +35,7 @@ def render_gold_audit_workbook(
     sheet["A1"].fill = TITLE_FILL
     sheet["A2"] = (
         "Compares Au thickness entered in NEMO usage events with indexed instrument-log records. "
-        "Review every highlighted exception before relying on the totals."
+        "Billing prefers reliable tool logs, with user input as fallback."
     )
     sheet["A2"].alignment = Alignment(wrap_text=True, vertical="top")
 
@@ -109,7 +109,21 @@ def render_gold_audit_workbook(
             record.time_difference_minutes,
             record.log_run_ids,
             record.log_sources,
-            record.notes,
+            "; ".join(
+                filter(
+                    None,
+                    (
+                        record.notes,
+                        (
+                            "Billing source: Tool log"
+                            if record.logged_nm is not None and not record.notes
+                            else "Billing source: User input fallback"
+                        )
+                        if record.event_id is not None
+                        else "Not billed: no matched usage event",
+                    ),
+                )
+            ),
         ]
         for column, value in enumerate(values, 1):
             cell = sheet.cell(row_index, column, value)

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import requests
 from openpyxl import Workbook
 
 from nemo_app.angstrom.client import AngstromLogClient
@@ -17,6 +18,7 @@ from nemo_app.billing.gold import (
 )
 from nemo_app.billing.gold_audit import (
     GoldAuditReport,
+    billable_logged_thickness,
     build_gold_audit_report,
     logged_gold_runs,
     reported_gold_usage,
@@ -202,13 +204,6 @@ def calculate_invoices(
             start=source_window[0],
             end=source_window[1],
         )
-        prepared = add_gold_deposition_charges(
-            prepared,
-            source=source,
-            usage_events=usage_events,
-            tools_by_id=tools,
-            projects_by_name=projects,
-        )
     reported_gold = reported_gold_usage(
         source,
         usage_events,
@@ -218,17 +213,28 @@ def calculate_invoices(
     log_payload: list[dict[str, object]] = []
     log_source_status = "Angstrom log application is not configured"
     if gold_log_client and source_window:
-        log_payload = gold_log_client.fetch_gold_runs(
-            source_window[0].date(),
-            source_window[1].date(),
-        )
-        log_source_status = "Connected to Angstrom log application"
+        grace = dt.timedelta(minutes=30)
+        log_start = min((usage.start - grace for usage in reported_gold), default=source_window[0])
+        log_end = max((usage.end + grace for usage in reported_gold), default=source_window[1])
+        try:
+            log_payload = gold_log_client.fetch_gold_runs(log_start.date(), log_end.date())
+            log_source_status = "Connected to Angstrom log application"
+        except (requests.RequestException, TimeoutError, ValueError, RuntimeError):
+            log_source_status = "Tool log unavailable; gold billing uses user input fallback"
     elif gold_log_client:
         log_source_status = "No Angstrom usage rows were present in the uploaded CSV"
     gold_audit = build_gold_audit_report(
         reported_gold,
         logged_gold_runs(log_payload),
         source_status=log_source_status,
+    )
+    prepared = add_gold_deposition_charges(
+        prepared,
+        source=source,
+        usage_events=usage_events,
+        logged_thickness_by_event=billable_logged_thickness(gold_audit),
+        tools_by_id=tools,
+        projects_by_name=projects,
     )
     prepared = prepared.loc[~prepared["IsMissedReservation"].fillna(False)].copy()
     if prepared.empty:

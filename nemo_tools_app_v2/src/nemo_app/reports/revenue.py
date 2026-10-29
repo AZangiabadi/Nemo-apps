@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from nemo_app.billing.constants import INVOICE_APPLICATION_IDENTIFIERS
+from nemo_app.billing.constants import DESIRED_LAB_ORDER, INVOICE_APPLICATION_IDENTIFIERS
 from nemo_app.billing.invoice_model import InvoiceDocument
 from nemo_app.nemo.billing import billing_month_dates
 
@@ -23,6 +23,7 @@ def summarize_revenue(documents: tuple[InvoiceDocument, ...], period: str) -> di
         for index in range(end.day)
     }
     applications = dict.fromkeys(INVOICE_APPLICATION_IDENTIFIERS, 0)
+    labs = dict.fromkeys(DESIRED_LAB_ORDER, 0)
     pis: dict[str, dict[str, Any]] = {}
     total = gold = fees = invoice_count = 0
     projects: set[str] = set()
@@ -34,6 +35,8 @@ def summarize_revenue(documents: tuple[InvoiceDocument, ...], period: str) -> di
         total += amount
         fee = _cents(document.access_fee)
         fees += fee
+        for lab, value in document.lab_totals.items():
+            labs[lab] = labs.get(lab, 0) + _cents(value)
         days[end.isoformat()]["fees"] += fee
         document_gold = 0
         line_total = 0
@@ -96,6 +99,7 @@ def summarize_revenue(documents: tuple[InvoiceDocument, ...], period: str) -> di
         "applications": [
             {"name": name, "total": value / 100} for name, value in applications.items()
         ],
+        "labs": [{"name": name, "total": value / 100} for name, value in labs.items()],
         "pis": [
             {
                 "name": pi["name"],

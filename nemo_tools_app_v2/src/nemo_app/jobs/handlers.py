@@ -156,6 +156,11 @@ def _revenue(context: JobContext) -> tuple[str, dict[str, Any]]:
                 metadata=context.metadata(),
                 options=InvoiceOptions(apply_hourly_caps=hourly_caps, use_cache=False),
                 timezone=context.config.timezone,
+                gold_log_client=(
+                    AngstromLogClient(context.config.angstrom_log_app_url)
+                    if context.config.angstrom_log_app_url
+                    else None
+                ),
             )
             documents = calculation.documents
         except NoInvoiceableRows:

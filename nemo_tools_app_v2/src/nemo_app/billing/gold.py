@@ -117,6 +117,7 @@ def add_gold_deposition_charges(
     *,
     source: pd.DataFrame,
     usage_events: list[dict[str, Any]],
+    logged_thickness_by_event: dict[object, float],
     tools_by_id: dict[int, str],
     projects_by_name: dict[str, dict[str, Any]],
 ) -> pd.DataFrame:
@@ -126,6 +127,7 @@ def add_gold_deposition_charges(
     An API event must match an uploaded tool-usage or staff-charge row by tool, activating
     project, and start minute. This prevents a partial CSV export from billing
     unrelated Angstrom sessions returned by the API query.
+    Reliable matched tool-log thickness takes priority over user-entered Au thickness.
     """
     if prepared.empty or not usage_events:
         return prepared.copy()
@@ -143,7 +145,12 @@ def add_gold_deposition_charges(
         tool_key = normalize_tool_key(tool_name)
         project = project_by_id.get(event.get("project"))
         start = parse_iso_datetime(event.get("start"))
-        thickness = gold_thickness_nm(event.get("run_data"))
+        logged_thickness = logged_thickness_by_event.get(event_id)
+        thickness = (
+            Decimal(str(logged_thickness))
+            if logged_thickness is not None
+            else gold_thickness_nm(event.get("run_data"))
+        )
         if tool_key not in ANGSTROM_TOOL_KEYS or not project or not start or thickness <= 0:
             continue
         project_name, application = project
@@ -179,6 +186,9 @@ def add_gold_deposition_charges(
                 "Period": start.strftime("%Y-%m"),
                 "Subsidy": 0.0,
                 "Usage Event ID": event_id,
+                "Gold Thickness Source": (
+                    "Tool log" if logged_thickness is not None else "User input fallback"
+                ),
             }
         )
         row["Billable User Key"] = billable_user_key(pd.Series(row))

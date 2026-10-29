@@ -3,7 +3,7 @@
 ## Revenue Analysis
 
 Open `/tools/revenue` for monthly calculated invoice revenue, daily charge and
-gold-surcharge charts, project-type totals, and PI spending rankings. Analysis
+gold-surcharge charts, lab/project-type totals, and PI spending rankings. Analysis
 runs through the same `calculate_invoices` service used by Excel/PDF generation,
 including waived/no-charge exclusions, adjustments, minimum-quantity filtering,
 project/session caps, recorded gold deposition charges, and default access fees.
@@ -21,6 +21,9 @@ Previous/next month arrows also load saved results; Next stops at the current mo
 Re-analyze uses the protected billing API token and replaces the saved result
 only after successful completion. Existing completed revenue jobs are migrated
 to saved results automatically. The original calculation timestamp is retained.
+Lab totals use final invoice lab assignments and exclude access fees; gold and
+associated staff charges remain in their assigned lab. Older saved reports
+without lab totals remain viewable and require Re-analyze once for this breakdown.
 
 ## NEMO Lookup Data
 
@@ -253,6 +256,12 @@ thickness dashboard. Each invoice run then adds a gold-deposition audit workbook
 to the output ZIP. The workbook compares Au thickness reported in NEMO usage
 events with the closest same-instrument log records, highlights mismatches and
 missing reports, and totals both measurements.
+Invoices and revenue analysis bill reliable matched tool-log thickness at
+$1.10/nm. Missing, ambiguous, or warning-flagged log matches fall back to the
+user-reported Au thickness. An unavailable/unconfigured logger also falls back
+to user input. The audit Notes column records the billing source. Log queries
+cover full usage sessions, including sessions spanning midnight. Previously
+generated invoices and saved analyses retain their original amounts until rerun.
 
 ## Data lifecycle
 

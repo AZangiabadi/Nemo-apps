@@ -38,6 +38,13 @@
     <section class="revenue-section"><h2>Revenue by project type</h2><div class="revenue-chart small"><canvas id="type-chart" role="img" aria-label="Final revenue by project type, including allocated access fees"></canvas></div></section>
   </div>
   <section class="revenue-section">
+    <h2>Revenue by lab</h2>
+    <p id="lab-unavailable" class="revenue-muted" hidden>Lab breakdown is unavailable in this saved analysis. Select Re-analyze to add it.</p>
+    <div id="lab-chart-wrap" class="revenue-chart small"><canvas id="lab-chart" role="img" aria-label="Final invoice revenue by lab, excluding access fees"></canvas></div>
+    <p class="revenue-muted revenue-note">Access fees are excluded. Gold charges and associated staff charges are included in their assigned lab.</p>
+    <details id="lab-details" class="revenue-details"><summary>Lab revenue data</summary><div id="lab-data"></div></details>
+  </section>
+  <section class="revenue-section">
     <div class="revenue-section-heading"><h2>PI spending</h2><div class="revenue-table-tools"><label for="pi-limit">Show<select id="pi-limit"><option value="10">Top 10</option><option value="25">Top 25</option><option value="0">All PIs</option></select></label><button id="export-revenue" type="button" class="secondary">Export CSV</button></div></div>
     <div class="revenue-table-wrap"><table class="revenue-table pi-ranking"><thead><tr><th scope="col">Rank</th><th scope="col">Principal investigator</th><th scope="col" class="numeric">Final revenue</th><th scope="col" class="numeric">Projects</th><th scope="col" class="numeric">Gold</th><th scope="col" class="numeric">Share</th></tr></thead><tbody id="pi-rows"></tbody></table></div>
     <details class="revenue-details"><summary>Daily revenue data</summary><div class="revenue-table-wrap"><table class="revenue-table"><thead><tr><th scope="col">Date</th><th scope="col">Charges</th><th scope="col">Access fees</th><th scope="col">Gold included</th><th scope="col">Total</th></tr></thead><tbody id="daily-rows"></tbody></table></div></details>

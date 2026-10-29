@@ -72,13 +72,55 @@ def revenue_source():
     return pd.concat([source, gold, waived, no_charge], ignore_index=True)
 
 
+class RevenueGoldLog:
+    def fetch_gold_runs(self, start, end):
+        return [
+            {
+                "system": "Angstrom UHV",
+                "start_time": "2026-04-10T09:30:00",
+                "thickness_nm": 25,
+                "run_id": "test-gold-run",
+            }
+        ]
+
+
 class RevenueTests(unittest.TestCase):
+    def test_gold_prefers_tool_log_and_falls_back_when_unavailable_or_unreliable(self):
+        from unittest.mock import Mock
+
+        for mode, expected, source_name in (
+            ("good", 44, "Tool log"),
+            ("missing", 27.5, "User input fallback"),
+            ("warning", 27.5, "User input fallback"),
+            ("timeout", 27.5, "User input fallback"),
+            ("unconfigured", 27.5, "User input fallback"),
+        ):
+            with self.subTest(mode=mode):
+                client = Mock()
+                logs = RevenueGoldLog().fetch_gold_runs(None, None)
+                logs[0]["thickness_nm"] = 40
+                if mode == "warning":
+                    logs[0]["warning"] = "Incomplete tool log"
+                client.fetch_gold_runs.return_value = [] if mode == "missing" else logs
+                if mode == "timeout":
+                    client.fetch_gold_runs.side_effect = TimeoutError("Logger unavailable")
+                docs = calculate_invoices(
+                    revenue_source(),
+                    metadata=RevenueMetadata(),
+                    options=InvoiceOptions(),
+                    gold_log_client=None if mode == "unconfigured" else client,
+                ).documents
+                gold = docs[0].lines.loc[docs[0].lines["Type"].eq("gold_deposition")].iloc[0]
+                self.assertEqual(gold["Cost"], expected)
+                self.assertEqual(gold["Gold Thickness Source"], source_name)
+
     def test_reconciles_caps_gold_fees_waivers_and_exported_invoices(self):
         for hourly_caps, expected in ((True, 1452.5), (False, 1652.5)):
             with self.subTest(hourly_caps=hourly_caps):
                 options = InvoiceOptions(apply_hourly_caps=hourly_caps, generate_pdf=False)
                 calculation = calculate_invoices(
                     revenue_source(),
+                    gold_log_client=RevenueGoldLog(),
                     metadata=RevenueMetadata(),
                     options=options,
                     timezone=ZoneInfo("America/New_York"),
@@ -86,6 +128,9 @@ class RevenueTests(unittest.TestCase):
                 report = summarize_revenue(calculation.documents, "2026-04")
                 self.assertEqual(report["total"], expected)
                 self.assertEqual(report["gold"], 27.5)
+                self.assertEqual(
+                    sum(row["total"] for row in report["labs"]) + report["fees"], expected
+                )
                 self.assertEqual(report["fees"], 50.0)
                 self.assertEqual(report["pi_count"], 1)
                 self.assertEqual(report["pis"][0]["total"], expected)
@@ -98,6 +143,7 @@ class RevenueTests(unittest.TestCase):
                         generate_invoices(
                             revenue_source(),
                             Path(folder),
+                            gold_log_client=RevenueGoldLog(),
                             metadata=RevenueMetadata(),
                             options=replace(options, make_zip=False),
                         )
@@ -110,9 +156,11 @@ class RevenueTests(unittest.TestCase):
         empty = summarize_revenue((), "2024-02")
         self.assertEqual(len(empty["daily"]), 29)
         self.assertEqual(empty["total"], 0)
+        self.assertTrue(all(lab["total"] == 0 for lab in empty["labs"]))
         self.assertEqual(empty["pis"], [])
         docs = calculate_invoices(
             revenue_source(),
+            gold_log_client=RevenueGoldLog(),
             metadata=RevenueMetadata(),
             options=InvoiceOptions(),
         ).documents
@@ -132,6 +180,19 @@ class RevenueTests(unittest.TestCase):
         self.assertEqual(
             {item["name"]: item["total"] for item in report["applications"]}["Industry"], 350
         )
+
+    def test_lab_revenue_uses_final_capped_charges_and_separates_fees(self):
+        source = usage_frame().iloc[[0, 0]].copy().reset_index(drop=True)
+        source.loc[1, "Item"] = "Bruker Tensor II FTIR"
+        docs = calculate_invoices(
+            source, metadata=RevenueMetadata(), options=InvoiceOptions()
+        ).documents
+        report = summarize_revenue(docs, "2026-04")
+        labs = {row["name"]: row["total"] for row in report["labs"]}
+        self.assertEqual(labs["Cleanroom"], 40)
+        self.assertEqual(labs["SMCL"], 100)
+        self.assertEqual(report["fees"], 50)
+        self.assertEqual(report["total"], 190)
 
     def test_revenue_job_route_worker_and_security(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -171,6 +232,7 @@ class RevenueTests(unittest.TestCase):
                     "nemo_app.jobs.handlers.fetch_billing_dataframe", return_value=revenue_source()
                 ),
                 patch("nemo_app.jobs.handlers.JobContext.metadata", return_value=RevenueMetadata()),
+                patch("nemo_app.jobs.handlers.AngstromLogClient", return_value=RevenueGoldLog()),
             ):
                 run_job(config, store, job)
             completed = client.get(status_url)

@@ -68,6 +68,7 @@ class GoldDepositionTests(unittest.TestCase):
         prepared = prepare_usage_dataframe(source, apply_caps=False)
         result = add_gold_deposition_charges(
             prepared,
+            logged_thickness_by_event={6746: 20.25},
             source=source,
             usage_events=[
                 {
@@ -124,6 +125,7 @@ class GoldDepositionTests(unittest.TestCase):
         prepared = prepare_usage_dataframe(source, apply_caps=False)
         result = add_gold_deposition_charges(
             prepared,
+            logged_thickness_by_event={1: 10.0},
             source=source,
             usage_events=[
                 {
@@ -284,11 +286,11 @@ class GoldDepositionTests(unittest.TestCase):
         )
         self.assertIn("Gold deposition (Au) - Angstrom High Vacuum", values)
         self.assertIn("$1.10/nm", values)
-        self.assertIn(85.0, values)
-        self.assertIn(93.5, values)
+        self.assertIn(84.0, values)
+        self.assertIn(92.4, values)
         self.assertEqual(project_summary["Cleanroom"], 170.64)
-        self.assertEqual(project_summary["Consumable"], 93.5)
-        self.assertEqual(project_summary["Project Total"], 414.14)
+        self.assertEqual(project_summary["Consumable"], 92.4)
+        self.assertEqual(project_summary["Project Total"], 413.04)
         self.assertEqual(audit_values, {84.0, 85.0, "uhv-run-1"})
 
 

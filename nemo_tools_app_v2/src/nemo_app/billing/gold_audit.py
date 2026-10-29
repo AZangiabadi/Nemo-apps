@@ -201,6 +201,7 @@ def build_gold_audit_report(
     grace = dt.timedelta(minutes=match_grace_minutes)
     assigned: dict[int, list[LoggedGoldRun]] = {index: [] for index in range(len(usages))}
     unassigned: list[LoggedGoldRun] = []
+    ambiguous: set[int] = set()
     for log in logs:
         candidates = [
             (index, usage)
@@ -218,6 +219,21 @@ def build_gold_audit_report(
                 candidate[0],
             ),
         )
+        score = (
+            _distance_to_usage(log.start, usages[index]),
+            abs((log.start - usages[index].start).total_seconds()),
+        )
+        tied = [
+            i
+            for i, usage in candidates
+            if (
+                _distance_to_usage(log.start, usage),
+                abs((log.start - usage.start).total_seconds()),
+            )
+            == score
+        ]
+        if len(tied) > 1:
+            ambiguous.update(tied)
         assigned[index].append(log)
 
     rows: list[GoldAuditRow] = []
@@ -232,6 +248,8 @@ def build_gold_audit_report(
             else None
         )
         notes = "; ".join(filter(None, (log.warning for log in matched)))
+        if index in ambiguous:
+            notes = "; ".join(filter(None, (notes, "Ambiguous tool-log session match")))
         rows.append(
             GoldAuditRow(
                 event_id=usage.event_id,
@@ -303,3 +321,14 @@ def build_gold_audit_report(
         relative_tolerance=relative_tolerance,
         source_status=source_status,
     )
+
+
+def billable_logged_thickness(report: GoldAuditReport) -> dict[object, float]:
+    thicknesses = {}
+    for row in report.rows:
+        if row.event_id is None:
+            continue
+        if row.notes or row.logged_nm is None:
+            continue
+        thicknesses[row.event_id] = row.logged_nm
+    return thicknesses
