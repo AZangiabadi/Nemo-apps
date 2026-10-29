@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,24 +9,14 @@ import pandas as pd
 import requests
 
 from nemo_app.nemo.client import NemoClient
+from nemo_app.nemo.lookups import tool_lab
 
 from .excel import save_frames
 
 LABS = {
-    "clean-room": ("Clean Room", ("clean room", "cleanroom")),
-    "smcl": (
-        "SMCL",
-        (
-            "smcl",
-            "shared materials characterization lab",
-            "soft materials characterization lab",
-            "surface materials characterization lab",
-        ),
-    ),
-    "electron-microscopy": (
-        "Electron Microscopy",
-        ("electron microscopy", "electron microscope", "electron microscopy lab"),
-    ),
+    "clean-room": ("Clean Room", "Cleanroom"),
+    "smcl": ("SMCL", "SMCL"),
+    "electron-microscopy": ("Electron Microscopy", "Electron Microscopy Lab"),
 }
 
 
@@ -37,14 +26,6 @@ class ActiveLabUsersResult:
     cutoff_date: dt.date
     combined_user_count: int
     summary: tuple[dict[str, object], ...]
-
-
-def _search_text(value: object) -> str:
-    if isinstance(value, dict):
-        return " ".join(_search_text(item) for item in value.values())
-    if isinstance(value, list):
-        return " ".join(_search_text(item) for item in value)
-    return " ".join(re.sub(r"[_\-/\\()\[\]{},;:]", " ", str(value or "").lower()).split())
 
 
 def _date(value: object) -> dt.date | None:
@@ -79,9 +60,10 @@ def build_active_lab_users_report(
     tools_by_id = {record["id"]: record for record in tools if isinstance(record.get("id"), int)}
     tool_ids: dict[str, set[int]] = {lab: set() for lab in selected_labs}
     for tool_id, tool in tools_by_id.items():
-        text = _search_text(tool)
+        assigned_lab = tool_lab(tool)
         for lab in selected_labs:
-            if any(keyword in text for keyword in LABS[lab][1]):
+            expected_lab = LABS[lab][1]
+            if assigned_lab == expected_lab:
                 tool_ids[lab].add(tool_id)
     try:
         qualifications = client.fetch_all(f"qualifications/?qualified_on__gte={cutoff.isoformat()}")

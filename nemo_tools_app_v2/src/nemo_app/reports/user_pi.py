@@ -28,7 +28,13 @@ def build_user_pi_report(
     use_cache: bool,
 ) -> UserPIReportResult:
     projects = metadata.projects(use_cache=use_cache)
-    frame = load_usage_csv(csv_path, project_map=projects)
+    frame = load_usage_csv(
+        csv_path,
+        project_map=projects,
+        tools_by_id=metadata.tools(use_cache=use_cache),
+        tool_labs=metadata.tool_labs(use_cache=use_cache),
+        consumable_labs=metadata.consumable_labs(use_cache=use_cache),
+    )
     frame = frame.loc[~frame["IsMissedReservation"].fillna(False)].copy()
     if frame.empty:
         raise ValueError("No billing rows remain after filtering the CSV.")

@@ -31,6 +31,8 @@ class QualificationImporterTests(unittest.TestCase):
             client = NemoClient("test-token", dry_run=True)
 
             def fetch_all(endpoint: str) -> list[dict[str, object]]:
+                if endpoint == "qualification_levels/":
+                    return [{"id": 42, "name": "24hrs Access"}]
                 if endpoint == "users/":
                     return [
                         {"id": 1, "email": "ada@example.edu"},
@@ -63,6 +65,7 @@ class QualificationImporterTests(unittest.TestCase):
             self.assertEqual(result.missing_user_count, 1)
             self.assertEqual(result.invalid_tool_count, 1)
             self.assertTrue(result.dry_run)
+            self.assertTrue(all("'qualification_level': 42" in action for action in client.actions))
             self.assertEqual([item[0] for item in progress], list(range(1, 7)))
             self.assertTrue(all(item[1] == 6 for item in progress))
             self.assertEqual(

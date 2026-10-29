@@ -10,6 +10,7 @@ from nemo_app.billing.text import normalize_item
 
 from .cache import JsonTTLCache
 from .client import NemoClient
+from .lookups import tool_lab
 
 
 class MetadataRepository:
@@ -50,15 +51,9 @@ class MetadataRepository:
         )
 
     def tool_labs(self, *, use_cache: bool = True) -> dict[str, str]:
-        labs = {
-            "cleanroom": "Cleanroom",
-            "smcl": "SMCL",
-            "electron microscopy": "Electron Microscopy Lab",
-        }
         result = {}
         for record in self.tool_records(use_cache=use_cache):
-            category = str(record.get("_category") or "").split("/", 1)[0].strip().lower()
-            lab = labs.get(category)
+            lab = tool_lab(record)
             if record.get("name") and lab:
                 result[str(record["name"])] = lab
         return result
@@ -73,15 +68,25 @@ class MetadataRepository:
     def consumable_labs(self, *, use_cache: bool = True) -> dict[str, str]:
         def load() -> dict[str, str]:
             result: dict[str, str] = {}
+            category_labs = {
+                "accessories & tools": "Cleanroom",
+                "photoresists": "Cleanroom",
+                "wafers, masks, and carriers": "Cleanroom",
+                "afm tips and probes": "SMCL",
+            }
+            categories = {
+                record["id"]: category_labs.get(str(record.get("name") or "").strip().lower())
+                for record in self.client.fetch_all("consumable_categories/")
+            }
             for record in self.client.fetch_all("consumables/"):
                 category = record.get("category")
-                lab = "SMCL" if category == 4 else "Cleanroom" if category in {1, 2, 3} else None
+                lab = categories.get(category)
                 name = normalize_item(record.get("name"))
                 if name and lab:
                     result[name] = lab
             return result
 
-        return self._load("consumables", load, use_cache=use_cache)
+        return self._load("consumable_labs_v2", load, use_cache=use_cache)
 
     def users(self, *, use_cache: bool = True) -> list[dict[str, Any]]:
         return self._load("users", lambda: self.client.fetch_all("users/"), use_cache=use_cache)

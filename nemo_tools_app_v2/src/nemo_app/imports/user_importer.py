@@ -14,11 +14,11 @@ import requests
 
 from nemo_app.nemo.cache import JsonTTLCache
 from nemo_app.nemo.client import NemoClient
+from nemo_app.nemo.lookups import named_ids, required_id
 
-ACCOUNT_TYPES = {"cdg": 1, "industry": 2, "external academic": 3, "local": 4}
+ACCOUNT_TYPE_NAMES = ("cdg", "industry", "external academic", "local")
+# NEMO user types are fixed serializer choices, not account-type lookup records.
 USER_TYPES = {"local": 1, "cdg": 1, "external academic": 2, "industry": 4}
-PROJECT_TYPES = {"cdg": 2, "local": 3, "external academic": 4, "industry": 5}
-PROJECT_CATEGORIES = {"cdg": 6, "external academic": 1, "industry": 2, "local": 3}
 EXPECTED_HEADERS = {"name", "uni", "email", "pi", "account type", "project number"}
 
 Progress = Callable[[int, int, str], None]
@@ -164,7 +164,7 @@ def load_spreadsheet(path: Path) -> list[SpreadsheetRow]:
             )
         if not row.project_number:
             errors.append(f"Row {row.number}: missing Project Number")
-        if row.account_type not in ACCOUNT_TYPES:
+        if row.account_type not in ACCOUNT_TYPE_NAMES:
             errors.append(f"Row {row.number}: unsupported Account type {row.account_type!r}")
     if errors:
         raise ValueError("\n".join(errors[:20]))
@@ -239,13 +239,13 @@ def _fill_from_existing(row: SpreadsheetRow, user: dict[str, Any]) -> None:
     )
 
 
-def _account_payload(row: SpreadsheetRow) -> dict[str, Any]:
+def _account_payload(row: SpreadsheetRow, account_types: dict[str, int]) -> dict[str, Any]:
     return {
         "name": row.project_number,
         "note": "",
         "start_date": date.today().isoformat(),
         "active": True,
-        "type": ACCOUNT_TYPES[row.account_type],
+        "type": account_types[row.account_type],
     }
 
 
@@ -279,7 +279,13 @@ def _user_payload(
     }
 
 
-def _project_payload(row: SpreadsheetRow, account_id: int, pi_id: int) -> dict[str, Any]:
+def _project_payload(
+    row: SpreadsheetRow,
+    account_id: int,
+    pi_id: int,
+    project_types: dict[str, int],
+    project_categories: dict[str, int],
+) -> dict[str, Any]:
     return {
         "principal_investigators": [pi_id],
         "users": [pi_id],
@@ -290,7 +296,7 @@ def _project_payload(row: SpreadsheetRow, account_id: int, pi_id: int) -> dict[s
         "allow_consumable_withdrawals": True,
         "allow_staff_charges": True,
         "account": account_id,
-        "project_types": [PROJECT_TYPES[row.account_type]],
+        "project_types": [project_types[row.account_type]],
         "only_allow_tools": [],
         "contact_name": row.name,
         "contact_email": row.email,
@@ -299,7 +305,7 @@ def _project_payload(row: SpreadsheetRow, account_id: int, pi_id: int) -> dict[s
         "no_charge": False,
         "no_tax": False,
         "no_cap": False,
-        "category": PROJECT_CATEGORIES[row.account_type],
+        "category": project_categories[row.account_type],
     }
 
 
@@ -364,6 +370,13 @@ def run_import(
 
     rows = load_spreadsheet(spreadsheet_path)
     advance("Spreadsheet loaded and validated")
+    lookups = {}
+    for endpoint in ("account_types/", "project_types/", "billing/rate_categories/"):
+        lookup = named_ids(client.fetch_all(endpoint), source=endpoint)
+        lookups[endpoint] = {
+            name: required_id(lookup, name, source=endpoint)
+            for name in {row.account_type for row in rows}
+        }
     records = _load_existing(client, cache, use_cache=use_cache)
     advance("Current accounts, users, and projects loaded")
     used = set(records.users_by_username)
@@ -384,7 +397,9 @@ def run_import(
         key = row.project_number.lower()
         if key in account_ids:
             continue
-        account = records.accounts.get(key) or client.post("accounts/", _account_payload(row))
+        account = records.accounts.get(key) or client.post(
+            "accounts/", _account_payload(row, lookups["account_types/"])
+        )
         records.accounts[key] = account
         account_ids[key] = int(account["id"])
     advance("Accounts processed")
@@ -415,7 +430,14 @@ def run_import(
         if not pi:
             raise ValueError(f"PI {row.email!r} was not found after user processing")
         records.projects[key] = client.post(
-            "projects/", _project_payload(row, account_ids[key], int(pi["id"]))
+            "projects/",
+            _project_payload(
+                row,
+                account_ids[key],
+                int(pi["id"]),
+                lookups["project_types/"],
+                lookups["billing/rate_categories/"],
+            ),
         )
     advance("Projects processed")
 

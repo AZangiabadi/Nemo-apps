@@ -9,8 +9,9 @@ from typing import Any
 import openpyxl
 
 from nemo_app.nemo.client import NemoClient
+from nemo_app.nemo.lookups import named_ids, required_id
 
-QUALIFICATION_LEVEL = 1
+QUALIFICATION_LEVEL_NAME = "24hrs Access"
 TOOL_COLUMN_INDEX = 1
 DATE_COLUMN_INDEX = 2
 EMAIL_COLUMN_INDEX = 3
@@ -172,6 +173,11 @@ def run_qualification_import(
         write_log(issue)
 
     users = _user_lookup(client.fetch_all("users/"))
+    qualification_level = required_id(
+        named_ids(client.fetch_all("qualification_levels/"), source="qualification levels"),
+        QUALIFICATION_LEVEL_NAME,
+        source="qualification levels",
+    )
     tools = _tool_ids(client.fetch_all("tools/"))
     qualifications = _qualification_lookup(client.fetch_all("qualifications/"))
     write_log(
@@ -201,7 +207,7 @@ def run_qualification_import(
                 "qualified_on": row.qualified_on,
                 "user": user_id,
                 "tool": row.tool_id,
-                "qualification_level": QUALIFICATION_LEVEL,
+                "qualification_level": qualification_level,
             }
             if existing is None:
                 result = client.post("qualifications/", payload)

@@ -16,7 +16,14 @@ from tests.fixtures import usage_frame
 class _ActiveUsersClient:
     def fetch_all(self, endpoint: str):
         if endpoint == "tools/":
-            return [{"id": 10, "name": "Clean Room SEM"}]
+            return [
+                {
+                    "id": 10,
+                    "name": "SEM",
+                    "_category": "Cleanroom/Imaging",
+                    "_description": "Also used by SMCL",
+                }
+            ]
         if endpoint.startswith("qualifications/"):
             return [{"user": 20, "tool": 10, "qualified_on": "2026-06-01"}]
         raise AssertionError(f"Unexpected endpoint: {endpoint}")
@@ -91,6 +98,13 @@ class ReportTests(unittest.TestCase):
             )
             self.assertEqual(active.combined_user_count, 1)
             self.assertTrue(output.is_file())
+            smcl = build_active_lab_users_report(
+                root / "smcl.xlsx",
+                client=_ActiveUsersClient(),
+                selected_labs=("smcl",),
+                today=dt.date(2026, 7, 1),
+            )
+            self.assertEqual(smcl.combined_user_count, 0)
 
 
 if __name__ == "__main__":

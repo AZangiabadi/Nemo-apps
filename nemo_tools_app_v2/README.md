@@ -1,5 +1,24 @@
 # Refactored NEMO Tools Hub
 
+## NEMO Lookup Data
+
+Invoices and financial reports use tool categories from `tools/` for lab
+classification, with local historical tool mappings as fallbacks. Active lab
+user reports use the same category rules. Consumable lab policy maps category
+names from `consumable_categories/` to labs; category IDs are resolved at runtime.
+Unknown consumable categories are not assigned a lab by this lookup.
+
+User imports resolve account types, project types, and billing categories by
+name from `account_types/`, `project_types/`, and `billing/rate_categories/`.
+Qualification imports resolve the existing `24hrs Access` policy by name from
+`qualification_levels/`. Missing or ambiguous required lookup names stop imports
+before writes. Import tokens need read access to these endpoints in addition to
+their existing record creation/update permissions. User type codes remain fixed
+serializer choices; they are separate from the API account-type records.
+
+Session caps, project caps, fees, subsidies, and gold surcharge rules remain
+local billing policy.
+
 ## Newsletter Sync
 
 To reuse a server-managed key, set `MAILCHIMP_API_KEY` in the private V2 `.env`

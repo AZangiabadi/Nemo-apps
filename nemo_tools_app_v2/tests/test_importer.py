@@ -13,6 +13,21 @@ from nemo_app.nemo.client import NemoClient
 
 
 class ImporterTests(unittest.TestCase):
+    def test_missing_lookup_stops_before_any_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            spreadsheet = root / "users.csv"
+            spreadsheet.write_text(
+                "Name,UNI,Email,PI,Account Type,Project Number\n"
+                "Ada PI,ada1,ada@example.edu,PI,Local,P100\n"
+            )
+            client = Mock()
+            client.fetch_all.return_value = []
+            with self.assertRaisesRegex(ValueError, "missing required name"):
+                run_import(spreadsheet, client=client, cache=JsonTTLCache(root / "cache"))
+            client.post.assert_not_called()
+            client.patch.assert_not_called()
+
     def test_invalid_email_stops_before_any_api_requests(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -49,7 +64,11 @@ class ImporterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = NemoClient("test-token", dry_run=True)
-            client.fetch_all = lambda _endpoint: []  # type: ignore[method-assign]
+            client.fetch_all = lambda endpoint: (
+                [{"id": 42, "name": "Local"}]
+                if endpoint in ("account_types/", "project_types/", "billing/rate_categories/")
+                else []
+            )  # type: ignore[method-assign]
             cache = JsonTTLCache(root / "cache", 300)
             progress: list[tuple[int, int, str]] = []
 
@@ -61,6 +80,8 @@ class ImporterTests(unittest.TestCase):
             )
 
             self.assertTrue(result.dry_run)
+            self.assertTrue(any("'type': 42" in action for action in client.actions))
+            self.assertTrue(any("'category': 42" in action for action in client.actions))
             self.assertEqual(result.row_count, 3)
             self.assertEqual(result.project_count, 2)
             self.assertEqual([value[0] for value in progress], list(range(1, 9)))

@@ -59,6 +59,7 @@ def build_detailed_financial_report(
         csv_path,
         project_map=projects,
         tools_by_id=tools,
+        tool_labs=metadata.tool_labs(use_cache=use_cache),
         adjustment_requests=adjustments,
         consumable_labs=consumables,
         filter_applications=False,
