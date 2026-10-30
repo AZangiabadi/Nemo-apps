@@ -124,6 +124,16 @@ alongside the invoice files for reviewing the fetched quantities, rates, and
 costs. The existing invoice caps, access fees, and appearance settings apply
 to either input source.
 
+Detailed Financials, Usage Cap Analysis, User PI Report, and Missed Reservations
+also default to a selected month from the billing API, with CSV upload retained.
+These use the same read-only service token and `NEMO.use_billing_api` permission;
+each API report includes a downloadable `billing_source.csv` audit file. The
+financial reports exclude no-charge projects and waived charges. Missed
+Reservations includes no-charge projects and waived missed-reservation records
+because it reports reservation activity, not invoiceable revenue. It reflects
+the missed-reservation records supplied by NEMO's billing API, not every
+reservation or cancellation. Active Lab Users remains a current-state API report.
+
 This is an isolated, from-scratch rewrite of the NEMO application. The legacy
 Python files in the repository root are intentionally untouched, so this version
 can be tested and rolled out without disrupting the current app.
@@ -293,7 +303,14 @@ Adjust `NEMO_JUMBOTRON_SCROLL_STEP_PX` or
 ## Angstrom gold audit
 
 Set `ANGSTROM_LOG_APP_URL` to the private HTTPS address of the Angstrom gold
-thickness dashboard. Each invoice run then adds a gold-deposition audit workbook
+thickness dashboard. The Tools home page's Gold Thickness Tracker entry mirrors
+the existing dashboard under the NEMO Tools origin. The server relays its page
+and the fixed scan creation/status API endpoints through its private connection;
+visitors need only the NEMO Tools login and network access to the Tools server,
+not Tailscale on their browser device. Scan POSTs require the app CSRF token.
+Browser credentials are not forwarded to the Pi, redirects are not followed,
+and no general-purpose proxy or additional public Pi endpoint is created.
+Each invoice run adds a gold-deposition audit workbook
 to the output ZIP. The workbook compares Au thickness reported in NEMO usage
 events with the closest same-instrument log records, highlights mismatches and
 missing reports, and totals both measurements.

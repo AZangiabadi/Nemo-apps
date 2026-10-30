@@ -1,0 +1,28 @@
+<link rel="icon" href="{{ url_for('core.asset', name='nemo-logo') }}">
+<script>
+(() => {
+  const originalFetch = window.fetch.bind(window);
+  const prefix = {{ url_for('gold_tracker.start_scan')|tojson }};
+  const token = {{ csrf_token()|tojson }};
+  window.fetch = (resource, options = {}) => {
+    const source = resource instanceof Request ? resource.url : resource;
+    const url = new URL(source, location.href);
+    if (url.origin === location.origin && /^\/api\/scans(?:\/[A-Za-z0-9_-]+)?$/.test(url.pathname)) {
+      const headers = new Headers(options.headers || (resource instanceof Request ? resource.headers : undefined));
+      headers.set('X-CSRF-Token', token);
+      url.pathname = prefix + url.pathname.slice('/api/scans'.length);
+      return originalFetch(url, {...options, headers, credentials: 'same-origin'});
+    }
+    return originalFetch(resource, options);
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    const header = document.querySelector('header');
+    if (!header) return;
+    const link = document.createElement('a');
+    link.href = {{ url_for('core.home')|tojson }};
+    link.textContent = 'Back to NEMO Tools';
+    link.style.cssText = 'display:inline-block;color:inherit;margin-bottom:12px';
+    header.prepend(link);
+  });
+})();
+</script>

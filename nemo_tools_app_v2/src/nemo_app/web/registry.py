@@ -14,6 +14,13 @@ class ToolDefinition:
 
 TOOLS = (
     ToolDefinition(
+        "gold-thickness-tracker",
+        "Gold Thickness Tracker",
+        "Review instrument-recorded gold deposition thickness and run logs.",
+        "/tools/gold-thickness-tracker",
+        "#ab790b",
+    ),
+    ToolDefinition(
         "revenue",
         "Revenue Analysis",
         "Monthly invoice revenue, gold charges, and PI spending.",
@@ -58,7 +65,7 @@ TOOLS = (
     ToolDefinition(
         "usage-caps",
         "Usage Cap Analysis",
-        "Analyze session and project caps across one or more usage exports.",
+        "Compare session and project caps for monthly billing or usage exports.",
         "/tools/usage-caps",
         "#0369a1",
     ),
@@ -79,7 +86,7 @@ TOOLS = (
     ToolDefinition(
         "missed-reservations",
         "Missed Reservations",
-        "Extract missed reservations from a NEMO usage export.",
+        "Review monthly missed reservations by user and tool.",
         "/tools/missed-reservations",
         "#b45309",
     ),

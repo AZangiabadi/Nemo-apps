@@ -8,12 +8,18 @@ import pandas as pd
 from nemo_app.billing.caps import apply_max_session_charge_caps, apply_project_charge_caps
 from nemo_app.billing.constants import ACCESS_FEE_BY_APPLICATION, PROJECT_CAP_BY_APPLICATION
 from nemo_app.billing.invoice_model import InvoiceDocument
-from nemo_app.billing.prepare import is_missed_reservation, is_staff_charge, prepare_usage_dataframe
+from nemo_app.billing.prepare import (
+    exclude_waived_charges,
+    is_missed_reservation,
+    is_staff_charge,
+    prepare_usage_dataframe,
+)
 from nemo_app.billing.text import (
     billing_period_for_interval,
     normalize_item,
     parse_nemo_datetime,
 )
+from nemo_app.nemo.metadata import MetadataRepository
 
 from .excel import save_frames
 
@@ -53,11 +59,25 @@ class UsageCapResult:
     project_reduction: float
 
 
-def _prepare_sources(sources: list[tuple[Path, str]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _prepare_sources(
+    sources: list[tuple[Path, str]],
+    *,
+    metadata: MetadataRepository | None = None,
+    use_cache: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    options = {}
+    if metadata is not None:
+        options = {
+            "project_map": metadata.projects(use_cache=use_cache),
+            "tools_by_id": metadata.tools(use_cache=use_cache),
+            "tool_labs": metadata.tool_labs(use_cache=use_cache),
+            "consumable_labs": metadata.consumable_labs(use_cache=use_cache),
+            "adjustment_requests": metadata.adjustments(use_cache=use_cache),
+        }
     base_frames: list[pd.DataFrame] = []
     raw_frames: list[pd.DataFrame] = []
     for path, label in sources:
-        raw = pd.read_csv(path)
+        raw = exclude_waived_charges(pd.read_csv(path))
         raw["Source File"] = label
         raw["Cost"] = pd.to_numeric(raw["Cost"], errors="coerce").fillna(0.0)
         start_times = raw["Start time"].apply(parse_nemo_datetime)
@@ -71,7 +91,7 @@ def _prepare_sources(sources: list[tuple[Path, str]]) -> tuple[pd.DataFrame, pd.
         raw["IsMissedReservation"] = raw.apply(is_missed_reservation, axis=1)
         raw_frames.append(raw)
 
-        base = prepare_usage_dataframe(raw, apply_caps=False)
+        base = prepare_usage_dataframe(raw, apply_caps=False, **options)
         base["Source File"] = label
         base["PI_key"] = base["Project"].astype(str).str.split().str[-1]
         base_frames.append(base.loc[~base["IsMissedReservation"].fillna(False)])
@@ -277,8 +297,14 @@ def _hourly_details(hourly: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return top, details
 
 
-def build_usage_cap_report(sources: list[tuple[Path, str]], output_path: Path) -> UsageCapResult:
-    base, raw = _prepare_sources(sources)
+def build_usage_cap_report(
+    sources: list[tuple[Path, str]],
+    output_path: Path,
+    *,
+    metadata: MetadataRepository | None = None,
+    use_cache: bool = True,
+) -> UsageCapResult:
+    base, raw = _prepare_sources(sources, metadata=metadata, use_cache=use_cache)
     if base.empty:
         raise ValueError("No invoice-compatible rows were found.")
     hourly = apply_max_session_charge_caps(base)

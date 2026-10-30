@@ -209,36 +209,72 @@ def _excel_pdf(context: JobContext) -> tuple[str, dict[str, Any]]:
     return "PDF created", context.files_result([path])
 
 
+def _report_source(context: JobContext) -> tuple[Path, list[Path]]:
+    if context.job.payload.get("source") != "api":
+        return context.input(context.job.payload["input"]), []
+    period = context.job.payload["billing_month"]
+    context.log(f"Fetching {period} report data from NEMO")
+    frame = fetch_billing_dataframe(
+        context.read_only_client(),
+        period,
+        timezone=context.config.timezone,
+        allow_empty=context.job.kind == "missed_reservations",
+        include_no_charge_projects=context.job.kind == "missed_reservations",
+    )
+    path = context.output_dir / "billing_source.csv"
+    frame.to_csv(path, index=False)
+    context.log(f"Loaded {len(frame)} billing records")
+    return path, [path]
+
+
 def _detailed(context: JobContext) -> tuple[str, dict[str, Any]]:
+    source, audit_files = _report_source(context)
     path = context.output_dir / "detailed_financials.xlsx"
     result = build_detailed_financial_report(
-        context.input(context.job.payload["input"]),
+        source,
         path,
         metadata=context.metadata(),
         use_cache=bool(context.job.payload.get("use_cache", True)),
     )
-    return "Detailed financial report ready", context.files_result([path], **_result_data(result))
+    return "Detailed financial report ready", context.files_result(
+        [path, *audit_files], **_result_data(result)
+    )
 
 
 def _usage_caps(context: JobContext) -> tuple[str, dict[str, Any]]:
-    sources = [
-        (context.input(item["stored_name"]), item["label"])
-        for item in context.job.payload["inputs"]
-    ]
+    audit_files = []
+    if context.job.payload.get("source") == "api":
+        source, audit_files = _report_source(context)
+        sources = [(source, f"NEMO {context.job.payload['billing_month']}")]
+    else:
+        sources = [
+            (context.input(item["stored_name"]), item["label"])
+            for item in context.job.payload["inputs"]
+        ]
     path = context.output_dir / "usage_cap_analysis.xlsx"
-    result = build_usage_cap_report(sources, path)
-    return "Usage cap report ready", context.files_result([path], **_result_data(result))
+    result = build_usage_cap_report(
+        sources,
+        path,
+        metadata=context.metadata() if context.job.payload.get("source") == "api" else None,
+        use_cache=bool(context.job.payload.get("use_cache", True)),
+    )
+    return "Usage cap report ready", context.files_result(
+        [path, *audit_files], **_result_data(result)
+    )
 
 
 def _user_pi(context: JobContext) -> tuple[str, dict[str, Any]]:
+    source, audit_files = _report_source(context)
     path = context.output_dir / "user_pi_report.xlsx"
     result = build_user_pi_report(
-        context.input(context.job.payload["input"]),
+        source,
         path,
         metadata=context.metadata(),
         use_cache=bool(context.job.payload.get("use_cache", True)),
     )
-    return "User PI report ready", context.files_result([path], **_result_data(result))
+    return "User PI report ready", context.files_result(
+        [path, *audit_files], **_result_data(result)
+    )
 
 
 def _active_users(context: JobContext) -> tuple[str, dict[str, Any]]:
@@ -248,15 +284,14 @@ def _active_users(context: JobContext) -> tuple[str, dict[str, Any]]:
 
 
 def _missed(context: JobContext) -> tuple[str, dict[str, Any]]:
-    users, tools, total = build_missed_reservation_reports(
-        context.input(context.job.payload["input"]), threshold=5
-    )
+    source, audit_files = _report_source(context)
+    users, tools, total = build_missed_reservation_reports(source, threshold=5)
     data = {
         "users": users.to_dict("records"),
         "tools": tools.to_dict("records"),
         "total_users": total,
     }
-    return "Missed reservation report ready", {"files": [], "data": data}
+    return "Missed reservation report ready", context.files_result(audit_files, **data)
 
 
 def _replacement(context: JobContext) -> tuple[str, dict[str, Any]]:

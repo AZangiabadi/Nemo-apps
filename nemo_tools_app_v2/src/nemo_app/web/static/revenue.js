@@ -199,6 +199,7 @@
     if (event) event.preventDefault();
     const action = event?.submitter?.value || 'show';
     const ticket = ++generation;
+    const viewport = window.RevenueViewport.begin();
     button.disabled = true; showButton.disabled = true;
     syncMonthNavigation();
     if (action === 'analyze') button.textContent = 'Calculating...';
@@ -232,6 +233,7 @@
     } finally {
       button.disabled = false; showButton.disabled = false; button.textContent = 'Re-analyze';
       syncMonthNavigation();
+      await window.RevenueViewport.finish(viewport);
     }
   }
 
@@ -261,11 +263,12 @@
   syncMonthNavigation();
   const existing = query.get('analysis');
   if (existing && /^[a-zA-Z0-9-]+$/.test(existing)) {
+    const viewport = window.RevenueViewport.begin();
     button.disabled = true; showButton.disabled = true;
     syncMonthNavigation();
     poll(`/tools/revenue/${encodeURIComponent(existing)}/status`, ++generation)
       .catch(error => { status.className = 'revenue-status error'; status.textContent = error.message; })
-      .finally(() => { button.disabled = false; showButton.disabled = false; syncMonthNavigation(); });
+      .finally(async () => { button.disabled = false; showButton.disabled = false; syncMonthNavigation(); await window.RevenueViewport.finish(viewport); });
   } else {
     analyze();
   }

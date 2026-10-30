@@ -53,6 +53,16 @@
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
         interaction: {intersect: false, mode: 'index'},
+        onHover: (event, _elements, chart) => {
+          const hit = chart.getElementsAtEventForMode(event, 'nearest', {intersect: true}, false);
+          chart.canvas.style.cursor = hit.length ? 'pointer' : 'default';
+        },
+        onClick: (event, _elements, chart) => {
+          const hit = chart.getElementsAtEventForMode(event, 'nearest', {intersect: true}, false);
+          if (!hit.length) return;
+          const link = document.getElementById('yearly-rows').rows[hit[0].index]?.querySelector('a');
+          if (link) link.click();
+        },
         plugins: {
           legend: {position: 'bottom', labels: {boxWidth: 12, padding: 18}},
           tooltip: {callbacks: {
@@ -95,6 +105,7 @@
     if (event) event.preventDefault();
     if (!form.reportValidity()) return;
     const ticket = ++generation;
+    const viewport = window.RevenueViewport.begin();
     busy = true; navigation(); download.disabled = true; results.hidden = true;
     status.className = 'revenue-status'; status.textContent = 'Loading saved monthly analyses...';
     const query = new URLSearchParams({year: year.value, hourly_caps: caps.checked ? '1' : '0'});
@@ -111,7 +122,7 @@
     } catch (error) {
       if (ticket === generation) { status.className = 'revenue-status error'; status.textContent = error.message; }
     } finally {
-      if (ticket === generation) { busy = false; navigation(); }
+      if (ticket === generation) { busy = false; navigation(); await window.RevenueViewport.finish(viewport); }
     }
   }
 

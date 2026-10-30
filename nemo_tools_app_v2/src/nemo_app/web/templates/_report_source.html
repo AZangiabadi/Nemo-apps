@@ -1,0 +1,21 @@
+{% from "_form_helpers.html" import token %}
+{% macro report_source(multiple=false, needs_metadata=false) %}
+{% set source = request.form.get('source', 'api') %}
+<fieldset data-report-source data-needs-metadata="{{ 'true' if needs_metadata else 'false' }}">
+  <legend>Report source</legend>
+  <label class="choice"><input type="radio" name="source" value="api" {% if source == 'api' %}checked{% endif %}> NEMO API</label>
+  <label class="choice"><input type="radio" name="source" value="csv" {% if source == 'csv' %}checked{% endif %}> CSV upload</label>
+  <div data-api-source {% if source != 'api' %}hidden{% endif %}>
+    <label>Month<input type="month" name="billing_month" value="{{ request.form.get('billing_month', default_billing_month) }}" {% if source == 'api' %}required{% endif %}></label>
+  </div>
+  <div data-csv-source {% if source != 'csv' %}hidden{% endif %}>
+    <label>{{ 'Usage CSV files' if multiple else 'Usage CSV' }}<input type="file" name="{{ 'usage_csvs' if multiple else 'csv_file' }}" accept=".csv" {% if multiple %}multiple{% endif %} {% if source == 'csv' %}required{% endif %}></label>
+  </div>
+  {% if read_only_api_configured %}
+    <p class="help">This read-only tool uses the protected NEMO service account.</p>
+  {% else %}
+    <div data-report-token>{{ token() }}</div>
+  {% endif %}
+</fieldset>
+<script src="{{ url_for('static', filename='report_source.js') }}" defer></script>
+{% endmacro %}

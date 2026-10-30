@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% from "_form_helpers.html" import csrf, token %}
+{% from "_form_helpers.html" import csrf %}
+{% from "_report_source.html" import report_source with context %}
 {% block title %}User PI Report{% endblock %}
 {% block content %}
 <section class="hero">
@@ -10,12 +11,7 @@
 <section class="grid"><article class="card">
   <form method="post" action="{{ url_for('reports.user_pi_submit') }}" enctype="multipart/form-data">
     {{ csrf() }}
-    {% if read_only_api_configured %}
-      <p class="help">This read-only tool uses the protected NEMO service account.</p>
-    {% else %}
-      {{ token() }}
-    {% endif %}
-    <label>Billing CSV<input type="file" name="csv_file" accept=".csv" required></label>
+    {{ report_source(needs_metadata=true) }}
     <label class="choice"><input type="checkbox" name="bypass_cache" checked> Fetch live metadata</label>
     <button>Build workbook</button>
   </form>

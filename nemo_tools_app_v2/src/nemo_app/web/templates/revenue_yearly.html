@@ -33,4 +33,4 @@
   <section class="revenue-section"><h2>Monthly totals</h2><div class="revenue-table-wrap"><table class="revenue-table"><thead><tr><th scope="col">Month</th><th scope="col">Source</th><th scope="col">Status</th><th scope="col" class="numeric">Cleanroom</th><th scope="col" class="numeric">SMCL</th><th scope="col" class="numeric">Electron Microscopy</th><th scope="col" class="numeric">Three labs</th><th scope="col" class="numeric">Other charges</th><th scope="col" class="numeric">Total revenue</th></tr></thead><tbody id="yearly-rows"></tbody></table></div></section>
 </div>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}"></script><script src="{{ url_for('static', filename='revenue_yearly.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}"></script><script src="{{ url_for('static', filename='revenue_viewport.js') }}"></script><script src="{{ url_for('static', filename='revenue_yearly.js') }}"></script>{% endblock %}

@@ -142,7 +142,7 @@ nav a:hover { background: #ecf4f6; }
 form { display: grid; gap: 17px; }
 label { display: grid; gap: 6px; font-weight: 750; }
 .choice { display: inline-flex; grid-auto-flow: column; align-items: center; justify-content: start; gap: 8px; font-weight: 650; }
-input[type="text"], input[type="password"], input[type="file"], input[type="number"], select, textarea {
+input[type="text"], input[type="password"], input[type="file"], input[type="number"], input[type="month"], select, textarea {
   width: 100%; padding: 11px 13px; border: 1px solid #c7d0dc; border-radius: 8px; background: white; font: inherit;
 }
 textarea { resize: vertical; line-height: 1.45; }

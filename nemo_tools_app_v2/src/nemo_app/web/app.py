@@ -10,6 +10,7 @@ from nemo_app.jobs.store import create_job_store
 from .blueprints.administration import administration_blueprint
 from .blueprints.core import core_blueprint
 from .blueprints.dashboard import dashboard_blueprint
+from .blueprints.gold_tracker import gold_tracker_blueprint
 from .blueprints.invoices import invoice_blueprint
 from .blueprints.jobs import jobs_blueprint
 from .blueprints.newsletter import newsletter_blueprint
@@ -42,6 +43,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app.jinja_env.globals["read_only_api_configured"] = bool(settings.read_only_api_token)
     app.register_blueprint(auth_blueprint)
     app.register_blueprint(core_blueprint)
+    app.register_blueprint(gold_tracker_blueprint)
     app.register_blueprint(invoice_blueprint)
     app.register_blueprint(administration_blueprint)
     app.register_blueprint(reports_blueprint)

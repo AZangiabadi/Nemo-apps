@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from nemo_app.config import AppConfig
 from nemo_app.dashboard.service import DashboardReport
@@ -13,6 +14,35 @@ from nemo_app.web.app import create_app
 
 
 class WebSmokeTests(unittest.TestCase):
+    def test_gold_tracker_opens_existing_configured_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            config = self._config(
+                Path(folder), angstrom_log_app_url="https://gold.example/dashboard"
+            )
+            client = create_app(config).test_client()
+            self.assertIn("Gold Thickness Tracker", client.get("/").get_data(as_text=True))
+            upstream = Mock(
+                status_code=200,
+                text=(
+                    "<!doctype html><html><head><title>Tracker</title></head>"
+                    "<body>Gold</body></html>"
+                ),
+                headers={"Content-Type": "text/html"},
+            )
+            with patch("nemo_app.web.blueprints.gold_tracker.requests.get", return_value=upstream):
+                response = client.get("/tools/gold-thickness-tracker")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("Location", response.headers)
+            self.assertIn(
+                "/tools/gold-thickness-tracker/api/scans", response.get_data(as_text=True)
+            )
+            unconfigured = create_app(replace(config, angstrom_log_app_url="")).test_client()
+            self.assertEqual(unconfigured.get("/tools/gold-thickness-tracker").status_code, 503)
+            protected = create_app(replace(config, access_password="secret")).test_client()
+            self.assertIn(
+                "/login", protected.get("/tools/gold-thickness-tracker").headers["Location"]
+            )
+
     def _config(self, root: Path, **changes) -> AppConfig:
         values = {
             "data_dir": root / "data",

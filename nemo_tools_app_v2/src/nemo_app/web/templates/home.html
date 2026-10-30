@@ -14,6 +14,7 @@
   <aside class="tool-rail" aria-label="Tool groups">
     <a href="{{ url_for('invoices.invoice_form') }}">Invoices</a>
     <a href="{{ url_for('reports.reports_page') }}">Reports</a>
+    <a href="{{ url_for('gold_tracker.page') }}">Gold thickness</a>
     <a href="{{ url_for('administration.import_form') }}">Import</a>
     <a href="{{ url_for('dashboard.page') }}">Jumbotron</a>
   </aside>
@@ -28,7 +29,7 @@
           <article class="card" style="--accent: {{ tool.accent }}">
             {% if tool.slug in ["invoices", "excel-to-pdf", "detailed-financials"] %}
               <span class="card-kicker">Billing</span>
-            {% elif tool.slug in ["usage-caps", "user-pi", "missed-reservations", "active-users"] %}
+            {% elif tool.slug in ["usage-caps", "user-pi", "missed-reservations", "active-users", "gold-thickness-tracker"] %}
               <span class="card-kicker">Reports</span>
             {% elif tool.slug in ["user-import", "qualification-import", "replacement", "newsletter"] %}
               <span class="card-kicker">Administration</span>

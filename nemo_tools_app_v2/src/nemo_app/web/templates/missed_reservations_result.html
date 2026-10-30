@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Missed Reservations{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='revenue.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='missed_reservations.css') }}">
+{% endblock %}
+{% block content %}
+<section class="workspace-heading revenue-heading">
+  <div>
+    <p class="eyebrow">Reports</p>
+    <h1>Missed Reservations</h1>
+    <p>{{ job.payload.get('billing_month') or 'CSV report' }}</p>
+  </div>
+  <a href="{{ url_for('reports.missed_page') }}">New report</a>
+</section>
+<section class="missed-job" data-status-url="{{ url_for('jobs.status', job_id=job.id) }}">
+  <div class="state-row"><span id="state" class="pill {{ job.status }}">{{ job.status|title }}</span></div>
+  <p id="summary" role="status">{{ job.summary or 'Waiting for a worker...' }}</p>
+  <div id="job-progress" class="progress"><div id="bar"></div></div>
+  <div id="downloads" class="actions"></div>
+</section>
+<section id="missed-results" hidden>
+  <dl class="revenue-metrics missed-metrics">
+    <div><dt>Users with missed reservations</dt><dd id="total-users">0</dd></div>
+    <div><dt>Users with 5+ misses</dt><dd id="flagged-users">0</dd></div>
+  </dl>
+  <p id="empty-report" class="revenue-status" hidden>No missed reservations were found.</p>
+  <div class="revenue-split">
+    <section class="revenue-section">
+      <h2>Top users with 5+ misses</h2>
+      <p id="empty-users" class="revenue-muted" hidden>No users had five or more missed reservations.</p>
+      <div class="missed-chart" id="users-chart-wrap"><canvas id="users-chart" role="img" aria-label="Top ten users with five or more missed reservations"></canvas></div>
+    </section>
+    <section class="revenue-section">
+      <h2>Top 10 tools</h2>
+      <p id="empty-tools" class="revenue-muted" hidden>No missed tool reservations were found.</p>
+      <div class="missed-chart" id="tools-chart-wrap"><canvas id="tools-chart" role="img" aria-label="Top ten tools by missed reservation count"></canvas></div>
+    </section>
+  </div>
+  <section class="revenue-section">
+    <h2>Users with 5+ misses</h2>
+    <div class="revenue-table-wrap" tabindex="0" role="region" aria-label="Missed reservations by user">
+      <table class="revenue-table missed-table">
+        <caption class="missed-caption">Users with five or more missed reservations, ranked by count</caption>
+        <thead><tr><th scope="col">User</th><th scope="col">Username</th><th scope="col" class="numeric">Misses</th><th scope="col">Most missed tools</th></tr></thead>
+        <tbody id="users-body"></tbody>
+      </table>
+    </div>
+  </section>
+  <section class="revenue-section">
+    <h2>Top 10 tools</h2>
+    <div class="revenue-table-wrap" tabindex="0" role="region" aria-label="Missed reservations by tool">
+      <table class="revenue-table missed-table">
+        <caption class="missed-caption">Top ten tools ranked by missed reservations</caption>
+        <thead><tr><th scope="col">Tool</th><th scope="col" class="numeric">Misses</th></tr></thead>
+        <tbody id="tools-body"></tbody>
+      </table>
+    </div>
+  </section>
+</section>
+<details class="revenue-details"><summary>Job log</summary><pre id="logs">Loading job log...</pre></details>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}"></script>
+<script src="{{ url_for('static', filename='missed_reservations.js') }}"></script>
+{% endblock %}

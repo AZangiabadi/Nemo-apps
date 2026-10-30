@@ -1,0 +1,13 @@
+.missed-job { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.missed-job .actions:empty { display: none; }
+.missed-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.missed-chart { position: relative; height: 400px; min-width: 0; }
+.missed-table { table-layout: fixed; }
+.missed-table td, .missed-table th { overflow-wrap: anywhere; white-space: normal; }
+.missed-table th.numeric { width: 80px; }
+.missed-caption { text-align: left; font-size: 13px; color: #596579; padding-bottom: 12px; }
+@media (max-width: 600px) {
+  .missed-table td, .missed-table th { min-width: 0; padding: 12px 6px; font-size: 12px; }
+  .missed-table th.numeric { width: 56px; }
+  .missed-chart { height: 380px; }
+}

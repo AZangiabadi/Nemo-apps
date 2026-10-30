@@ -14,7 +14,10 @@ def detail(job_id: str):
     job = job_store().get(job_id)
     if not job:
         abort(404)
-    return render_template("job.html", job=job)
+    template = (
+        "missed_reservations_result.html" if job.kind == "missed_reservations" else "job.html"
+    )
+    return render_template(template, job=job)
 
 
 @jobs_blueprint.get("/jobs/<job_id>/status")

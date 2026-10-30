@@ -94,11 +94,20 @@ def billing_records_dataframe(
 
 
 def fetch_billing_dataframe(
-    client: NemoClient, period: str, *, timezone: dt.tzinfo, allow_empty: bool = False
+    client: NemoClient,
+    period: str,
+    *,
+    timezone: dt.tzinfo,
+    allow_empty: bool = False,
+    include_no_charge_projects: bool = False,
 ) -> pd.DataFrame:
     start, end = billing_month_dates(period)
     query = urlencode(
-        {"start": start.isoformat(), "end": end.isoformat(), "include_no_charge_projects": "false"}
+        {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "include_no_charge_projects": str(include_no_charge_projects).lower(),
+        }
     )
     try:
         records = client.fetch_all(f"billing/billing_data/?{query}")
