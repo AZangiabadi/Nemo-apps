@@ -5,6 +5,8 @@ import datetime as dt
 from flask import Blueprint, jsonify, render_template, request, url_for
 
 from nemo_app.nemo.billing import billing_month_dates
+from nemo_app.reports.badger import BadgerHistory
+from nemo_app.reports.yearly_revenue import yearly_revenue
 
 from ..common import checkbox, config, job_store, read_only_api_secrets
 
@@ -28,6 +30,13 @@ def analyze():
         action = request.form.get("action", "analyze")
         if action not in {"show", "analyze"}:
             raise ValueError("Choose Show analysis or Re-analyze.")
+        historical = BadgerHistory(config().data_dir).report(
+            period, recalculate=action == "analyze"
+        )
+        if historical is not None:
+            response = jsonify(data=historical, saved=True)
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if action == "show":
             saved = job_store().revenue_snapshot(period, hourly_caps=checkbox("apply_hourly_caps"))
             if saved is None:
@@ -54,6 +63,35 @@ def analyze():
         secrets=secrets,
     )
     return jsonify(status_url=url_for("revenue.status", job_id=identifier)), 202
+
+
+@revenue_blueprint.get("/tools/revenue/yearly")
+def yearly_page():
+    today = dt.datetime.now(config().timezone).date()
+    return render_template("revenue_yearly.html", current_year=today.year)
+
+
+@revenue_blueprint.get("/tools/revenue/yearly/data")
+def yearly_data():
+    today = dt.datetime.now(config().timezone).date()
+    try:
+        year = int(request.args.get("year", str(today.year)))
+        cap_mode = request.args.get("hourly_caps", "0")
+        if cap_mode not in {"0", "1"}:
+            raise ValueError("Choose a valid session-cap setting.")
+        history = BadgerHistory(config().data_dir)
+
+        def monthly(period):
+            return history.report(period) or job_store().revenue_snapshot(
+                period, hourly_caps=cap_mode == "1"
+            )
+
+        data = yearly_revenue(year, today=today, monthly_report=monthly)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    response = jsonify(data)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @revenue_blueprint.get("/tools/revenue/<job_id>/status")

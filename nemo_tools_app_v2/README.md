@@ -2,6 +2,47 @@
 
 ## Revenue Analysis
 
+The Yearly revenue tab (`/tools/revenue/yearly`) stacks Cleanroom, SMCL, and
+Electron Microscopy Lab revenue by calendar month, with previous/next year
+navigation and CSV export. It reads saved monthly NEMO analyses and imported
+Badger reports only; no API calculations are started by viewing a year.
+Access fees and charges outside those three labs appear separately. Missing
+analyses, future months, and older saved reports without lab data stay distinct
+from recorded zero revenue. Monthly table links open the underlying analyses.
+
+### Badger History
+
+The revenue page automatically uses imported Badger records for covered months,
+including Show analysis, Re-analyze, and previous/next navigation. No NEMO API
+access is needed for those months. Badger CNI-local maps to CDG. Historical fees
+and gold revenue are zero, as confirmed by the facility. Rows with rawcost or
+cost equal to -1 are excluded; other credits and recorded discounts are retained.
+
+Recorded Badger costs already include many session caps. They are never capped
+again based solely on duration. An additional cap estimate is applied only to
+positive equipment charges exceeding a known current tool cap when comparable
+same-year/project-tier prices support uncapped linear billing. Existing final
+cost adjustments are preserved proportionally. These current caps are a proxy,
+not a reconstruction of every historical tariff. Both recorded revenue and the
+estimated reduction are displayed; per-row changes include workbook provenance.
+Lab mappings for retired tools are inferred; unresolved tools remain Unassigned.
+
+Private workbooks are archived in `data/badger_sources/`; normalized transactions
+and saved reports are in `data/badger.sqlite3`. Both are outside Git. Back up this
+database and the source archive alongside the app's other persistent data.
+To rebuild history from an entire source directory:
+
+```bash
+python -m nemo_app.reports.badger /path/to/badger_sources
+```
+
+Run that command in the same environment/data directory as the web app. Import
+validates all workbooks before replacing the historical tables in one transaction.
+Identical records repeated across files are deduplicated while repeated rows
+within a file are retained. Re-importing the same files does not duplicate charges.
+
+### NEMO Revenue
+
 Open `/tools/revenue` for monthly calculated invoice revenue, daily charge and
 gold-surcharge charts, lab/project-type totals, and PI spending rankings. Analysis
 runs through the same `calculate_invoices` service used by Excel/PDF generation,

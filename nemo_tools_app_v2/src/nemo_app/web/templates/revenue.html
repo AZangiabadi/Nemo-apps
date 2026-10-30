@@ -8,6 +8,7 @@
   <div><h1>Revenue Analysis</h1><p>Calculated invoice revenue</p></div>
   <span id="updated" class="revenue-muted"></span>
 </header>
+<nav class="revenue-tabs" aria-label="Revenue views"><a href="{{ url_for('revenue.page') }}" aria-current="page">Monthly revenue</a><a href="{{ url_for('revenue.yearly_page') }}">Yearly revenue</a></nav>
 <form id="revenue-form" class="revenue-toolbar" action="{{ url_for('revenue.analyze') }}" method="post">
   {{ csrf() }}
   <div class="revenue-month-field"><label for="billing-month">Billing month</label><div class="revenue-month-controls">
@@ -21,9 +22,10 @@
 </form>
 <p id="analysis-status" role="status" aria-live="polite" class="revenue-status">{{ default_month }} · Ready</p>
 <div id="revenue-results" hidden>
+  <p id="historical-note" class="revenue-muted revenue-note" hidden></p>
   <div class="revenue-context"><h2 id="period-label"></h2><span id="cap-mode" class="revenue-muted"></span></div>
   <dl class="revenue-metrics">
-    <div><dt>Final invoice revenue</dt><dd id="total-revenue"></dd><small id="invoice-count"></small></div>
+    <div><dt id="total-revenue-label">Final invoice revenue</dt><dd id="total-revenue"></dd><small id="invoice-count"></small></div>
     <div><dt>Gold deposition</dt><dd id="gold-revenue"></dd><small>Included in final revenue</small></div>
     <div><dt>Access fees</dt><dd id="fee-revenue"></dd><small>Included in final revenue</small></div>
     <div><dt>Other charges</dt><dd id="other-revenue"></dd><small>Tool, staff, and consumable charges</small></div>
@@ -31,7 +33,7 @@
   <section class="revenue-section">
     <div class="revenue-section-heading"><h2>Daily invoice revenue</h2><div class="revenue-key"><span class="key-charge">Charges</span><span class="key-fee">Access fees</span></div></div>
     <div class="revenue-chart"><canvas id="daily-chart" role="img" aria-label="Daily invoice revenue chart"></canvas></div>
-    <p class="revenue-muted revenue-note">Charges are allocated by billing completion date. Monthly access fees are booked on the last day of the month. Amounts represent invoice charges, not payments received.</p>
+    <p id="revenue-date-note" class="revenue-muted revenue-note">Charges are allocated by billing completion date. Monthly access fees are booked on the last day of the month. Amounts represent invoice charges, not payments received.</p>
   </section>
   <div class="revenue-split">
     <section class="revenue-section"><h2>Gold deposition revenue</h2><div class="revenue-chart small"><canvas id="gold-chart" role="img" aria-label="Daily gold deposition surcharge revenue"></canvas></div></section>
@@ -49,6 +51,7 @@
     <div class="revenue-table-wrap"><table class="revenue-table pi-ranking"><thead><tr><th scope="col">Rank</th><th scope="col">Principal investigator</th><th scope="col" class="numeric">Final revenue</th><th scope="col" class="numeric">Projects</th><th scope="col" class="numeric">Gold</th><th scope="col" class="numeric">Share</th></tr></thead><tbody id="pi-rows"></tbody></table></div>
     <details class="revenue-details"><summary>Daily revenue data</summary><div class="revenue-table-wrap"><table class="revenue-table"><thead><tr><th scope="col">Date</th><th scope="col">Charges</th><th scope="col">Access fees</th><th scope="col">Gold included</th><th scope="col">Total</th></tr></thead><tbody id="daily-rows"></tbody></table></div></details>
     <details class="revenue-details"><summary>Project-type revenue data</summary><div id="type-data"></div></details>
+    <details id="historical-changes" class="revenue-details" hidden><summary>Historical cap adjustments</summary><div class="revenue-table-wrap"><table class="revenue-table"><thead><tr><th>Tool</th><th>Date</th><th>Recorded</th><th>Estimated capped</th><th>Cap (hours)</th><th>Source row</th></tr></thead><tbody id="historical-change-rows"></tbody></table></div></details>
   </section>
 </div>
 {% endblock %}

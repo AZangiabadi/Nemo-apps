@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Yearly Revenue | NEMO{% endblock %}
+{% block shell_class %}wide{% endblock %}
+{% block head %}<link rel="stylesheet" href="{{ url_for('static', filename='revenue.css') }}">{% endblock %}
+{% block content %}
+<header class="workspace-heading revenue-heading"><div><h1>Revenue Analysis</h1><p>Monthly revenue by lab</p></div></header>
+<nav class="revenue-tabs" aria-label="Revenue views"><a href="{{ url_for('revenue.page') }}">Monthly revenue</a><a href="{{ url_for('revenue.yearly_page') }}" aria-current="page">Yearly revenue</a></nav>
+<form id="yearly-form" class="revenue-toolbar" action="{{ url_for('revenue.yearly_data') }}" method="get">
+  <div class="revenue-month-field"><label for="revenue-year">Calendar year</label><div class="revenue-month-controls">
+    <button type="button" id="previous-year" aria-label="Previous year" title="Previous year">&#8249;</button>
+    <input id="revenue-year" name="year" type="number" value="{{ current_year }}" min="1" max="{{ current_year }}" step="1" required>
+    <button type="button" id="next-year" aria-label="Next year" title="Next year">&#8250;</button>
+  </div></div>
+  <label class="choice"><input id="yearly-caps" type="checkbox"> Apply session caps (NEMO)</label>
+  <div class="revenue-run-actions"><button type="submit" id="show-year">Show year</button><button type="button" id="export-year" class="secondary" disabled>Export CSV</button></div>
+</form>
+<p id="yearly-status" class="revenue-status" role="status" aria-live="polite">Loading saved analyses...</p>
+<div id="yearly-results" hidden>
+  <div class="revenue-context"><h2 id="year-heading"></h2><span id="year-coverage" class="revenue-muted"></span></div>
+  <dl class="revenue-metrics">
+    <div><dt>Three-lab revenue</dt><dd id="year-lab-total"></dd><small>Stacked columns</small></div>
+    <div><dt>Total saved revenue</dt><dd id="year-total"></dd><small>Available months only</small></div>
+    <div><dt>Other charges</dt><dd id="year-other"></dd><small>Access fees and charges outside the three labs</small></div>
+    <div><dt>Months with lab data</dt><dd id="year-months"></dd><small id="year-missing"></small></div>
+  </dl>
+  <section class="revenue-section">
+    <h2>Monthly revenue by lab</h2>
+    <div class="revenue-chart yearly-chart"><canvas id="yearly-chart" role="img" aria-label="Twelve monthly stacked revenue columns for Cleanroom, SMCL and Electron Microscopy Lab"></canvas></div>
+    <p class="revenue-muted revenue-note">Columns contain only the three labs. Access fees, separately classified consumables, and unassigned charges are excluded. Missing months are unavailable, not zero.</p>
+    <p id="year-estimates" class="revenue-muted revenue-note" hidden></p>
+    <p id="year-unclassified" class="revenue-muted revenue-note" hidden></p>
+  </section>
+  <section class="revenue-section"><h2>Monthly totals</h2><div class="revenue-table-wrap"><table class="revenue-table"><thead><tr><th scope="col">Month</th><th scope="col">Source</th><th scope="col">Status</th><th scope="col" class="numeric">Cleanroom</th><th scope="col" class="numeric">SMCL</th><th scope="col" class="numeric">Electron Microscopy</th><th scope="col" class="numeric">Three labs</th><th scope="col" class="numeric">Other charges</th><th scope="col" class="numeric">Total revenue</th></tr></thead><tbody id="yearly-rows"></tbody></table></div></section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}"></script><script src="{{ url_for('static', filename='revenue_yearly.js') }}"></script>{% endblock %}

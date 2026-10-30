@@ -11,10 +11,17 @@
   const money = new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'});
   const charts = [];
   let report = null;
+  let historicalRange = null;
   let generation = 0;
   const text = (id, value) => { document.getElementById(id).textContent = value; };
 
   function syncMonthNavigation() {
+    if (historicalRange && monthInput.value) {
+      const historical = monthInput.value >= historicalRange[0] && monthInput.value <= historicalRange[1];
+      const wasHistorical = form.elements.apply_hourly_caps.disabled;
+      form.elements.apply_hourly_caps.disabled = historical;
+      if (!historical && wasHistorical) form.elements.apply_hourly_caps.checked = false;
+    }
     const invalid = !monthInput.value || !monthInput.validity.valid;
     previousMonth.disabled = showButton.disabled || invalid || monthInput.value <= monthInput.min;
     nextMonth.disabled = showButton.disabled || invalid || monthInput.value >= monthInput.max;
@@ -86,18 +93,32 @@
 
   function render(data) {
     report = data;
+    const historical = data.source === 'Badger';
+    if (data.historical_range) historicalRange = data.historical_range;
     results.hidden = false;
     text('period-label', data.label);
-    text('cap-mode', `Session caps ${data.apply_hourly_caps ? 'applied' : 'ignored'} | Project caps applied`);
+    text('cap-mode', historical ? `Badger | ${data.basis}` : `NEMO | Session caps ${data.apply_hourly_caps ? 'applied' : 'ignored'} | Project caps applied`);
     text('total-revenue', money.format(data.total));
+    text('total-revenue-label', historical ? (data.cap_adjusted_rows ? 'Historical revenue (estimate)' : 'Recorded Badger revenue') : 'Final invoice revenue');
     text('gold-revenue', money.format(data.gold));
     text('fee-revenue', money.format(data.fees));
     text('other-revenue', money.format(data.other));
     const count = (value, singular, plural = `${singular}s`) => `${value} ${value === 1 ? singular : plural}`;
-    text('invoice-count', `${count(data.invoice_count, 'invoice')} | ${count(data.pi_count, 'PI')} | ${count(data.project_count, 'project')}`);
+    text('invoice-count', `${historical ? count(data.record_count, 'charge row') : count(data.invoice_count, 'invoice')} | ${count(data.pi_count, 'PI')} | ${count(data.project_count, 'project')}`);
     text('updated', `Calculated ${new Date(data.generated_at).toLocaleString('en-US', {timeZone: 'America/New_York'})} ET`);
     document.getElementById('billing-month').value = data.period;
     form.elements.apply_hourly_caps.checked = data.apply_hourly_caps;
+    form.elements.apply_hourly_caps.disabled = historical;
+    document.getElementById('historical-note').hidden = !historical;
+    text('historical-note', historical ? `Badger recorded revenue: ${money.format(data.recorded_total)}. Estimated additional hourly-cap reduction: ${money.format(data.cap_adjustment)} (${data.cap_adjusted_rows} rows). Existing Badger caps and discounts preserved; ${data.ignored_rows} unpriced (-1) rows excluded. No historical access fees or gold charges. Estimates use known current tool caps where uncapped linear charges are identifiable. Retired-tool lab assignments are inferred; ${data.unassigned_lab_rows} rows remain unassigned.` : '');
+    text('revenue-date-note', historical ? 'Badger charge dates. Amounts are recorded charges with any separately identified cap estimates, not payment receipts.' : 'Charges are allocated by billing completion date. Monthly access fees are booked on the last day of the month. Amounts represent invoice charges, not payments received.');
+    document.getElementById('historical-changes').hidden = !historical || !data.cap_changes?.length;
+    document.getElementById('historical-change-rows').replaceChildren(...(data.cap_changes || []).map(item => {
+      const row = document.createElement('tr');
+      [item.item, item.date, money.format(item.recorded), money.format(item.adjusted), item.cap_hours,
+        `${item.source_file}:${item.source_row}`].forEach(value => { row.insertCell().textContent = value; });
+      return row;
+    }));
     const savedUrl = new URL(location.href);
     savedUrl.searchParams.delete('analysis');
     savedUrl.searchParams.set('month', data.period);
@@ -182,7 +203,8 @@
     syncMonthNavigation();
     if (action === 'analyze') button.textContent = 'Calculating...';
     status.className = 'revenue-status';
-    status.textContent = action === 'show' ? 'Loading saved analysis...' : 'Fetching monthly billing from NEMO...';
+    const selectedHistorical = historicalRange && monthInput.value >= historicalRange[0] && monthInput.value <= historicalRange[1];
+    status.textContent = action === 'show' ? 'Loading saved analysis...' : (selectedHistorical ? 'Recalculating Badger historical charges...' : 'Fetching monthly billing from NEMO...');
     results.hidden = !(report && report.period === form.elements.billing_month.value &&
       report.apply_hourly_caps === form.elements.apply_hourly_caps.checked);
     try {
@@ -198,7 +220,7 @@
       if (!response.ok) throw new Error(data.error || 'Unable to start revenue analysis.');
       if (data.saved) {
         render(data.data);
-        status.textContent = 'Saved analysis.';
+        status.textContent = data.data.source === 'Badger' ? 'Badger historical analysis.' : 'Saved analysis.';
         return;
       }
       const url = new URL(location.href);
@@ -218,6 +240,7 @@
     if (!report) return;
     const rows = [['Section', 'Date or name', 'Charges', 'Access fees', 'Gold included', 'Final revenue'],
       ['Monthly total', report.period, report.other + report.gold, report.fees, report.gold, report.total],
+      ...(report.source === 'Badger' ? [['Badger recorded total', report.period, '', '', '', report.recorded_total], ['Additional cap reduction (estimate)', report.period, '', '', '', report.cap_adjustment]] : []),
       ...report.daily.map(item => ['Daily', item.date, item.charges, item.fees, item.gold, item.total]),
       ...report.applications.map(item => ['Project type', item.name, '', '', '', item.total]),
       ...(report.labs || []).map(item => ['Lab', item.name, '', '', '', item.total]),
